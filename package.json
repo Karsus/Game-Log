@@ -1,0 +1,25 @@
+{
+    "name": "game-log-monorepo",
+    "version": "1.0.0",
+    "main": "index.js",
+    "private": true,
+    "engines": {
+        "node": ">=20",
+        "npm": ">=10"
+    },
+    "scripts": {
+        "dev:server": "cd server && nodemon server.js",
+        "dev:client": "cd client && npm run dev",
+        "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
+        "build:client": "cd client && npm run build",
+        "build": "npm run build:client",
+        "start": "node server/server.js"
+    },
+    "workspaces": [
+        "server",
+        "client"
+    ],
+    "devDependencies": {
+        "concurrently": "^9.2.0"
+    }
+}
