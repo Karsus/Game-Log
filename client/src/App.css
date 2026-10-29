@@ -1,11 +1,6 @@
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: 'Montserrat', sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+@import './styles/base.css';
+@import './styles/layout.css';
+@import './styles/collection.css';
+@import './styles/hunts.css';
+@import './styles/forms.css';
+@import './styles/responsive.css';

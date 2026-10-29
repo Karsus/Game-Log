@@ -1,0 +1,55 @@
+// An isolated, disposable workspace for local review. Never reads MONGO_URI.
+const path = require('node:path')
+const mongoose = require('mongoose')
+const { MongoMemoryReplSet } = require('mongodb-memory-server')
+const { createApp } = require('../app')
+const { hashPassword } = require('../domain/security')
+const v = require('../domain/validation')
+async function start() {
+  process.env.MONGOMS_DOWNLOAD_DIR = path.join(__dirname, '../../.runtime/mongodb')
+  const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } })
+  const connection = await mongoose.createConnection(mongo.getUri(), { dbName: 'gamelog-demo' }).asPromise()
+  const { app, models: m, sessionStore } = await createApp({ connection, secret: 'local-disposable-demo-only-do-not-deploy', env: { NODE_ENV: 'development', DEMO_MODE: 'true', SITE_URL: 'http://localhost:5041', SERVER_URL: 'http://localhost:4051', PORT: '4051' } })
+  const user = await m.Account.create({ name: 'Player One', email: 'demo@gamelog.local', passwordHash: await hashPassword('GameLog-demo-2026!') })
+  const rows = [
+    ['Gladius', 'gamecube', null, null, 'planned', false],
+    ['Uncharted: The Lost Legacy', 'ps4', 4, 20, 'in-progress', true],
+    ['A Plague Tale: Innocence', 'ps4', 3, 15, 'priority', true],
+    ['Stellar Blade', 'ps5', 4, 50, 'completed', true],
+    ['Ghost of Tsushima', 'ps5', 3, 45, 'in-progress', true],
+    ['Celeste', 'ps4', 8, 30, 'dropped', true],
+    ['Hollow Knight', 'pc', 9, 70, 'planned', false],
+    ['The Artful Escape', 'ps5', 1, 5, 'completed', true],
+    ['Journey', 'ps4', 2, 6, 'priority', false],
+  ]
+  for (let index = 0; index < rows.length; index++) {
+    const [title, platformId, expectedDifficulty, expectedHours, status, hasPlatinum] = rows[index]
+    const game = await m.LibraryGame.create({ ...v.game.parse({ title, releases: [{ platformId }], showOnBoard: title !== 'Gladius', wishlist: title === 'Hollow Knight', notes: 'Sample record in the disposable demo workspace. Estimates are illustrative.' }), userId: user._id })
+    if (title !== 'Hollow Knight') await m.GameCopy.create({ ...v.copy.parse({ gameId: String(game._id), platformId, format: index % 2 ? 'digital' : 'physical', storefront: platformId === 'pc' ? 'Steam' : '', condition: 'good' }), userId: user._id })
+    if (title === 'Gladius') await m.GameCopy.create({ ...v.copy.parse({ gameId: String(game._id), platformId: 'xbox', format: 'digital' }), userId: user._id })
+    const service = platformId.startsWith('ps') ? 'playstation' : platformId === 'pc' ? 'steam' : 'none', goal = hasPlatinum ? 'platinum' : service === 'none' ? 'manual' : 'base'
+    const hunt = await m.Hunt.create({ ...v.hunt.parse({ gameId: String(game._id), platformId, service, expectedDifficulty, expectedHours, status, hasPlatinum, hasAchievements: service !== 'none', goal, earned: status === 'completed' ? 40 : index * 3, total: 40, completion: { [goal]: status === 'completed', completedOn: status === 'completed' ? '2026-10-20' : '' } }), userId: user._id, createdAt: new Date(2026, 8, index + 1) })
+    if (title === 'Uncharted: The Lost Legacy') {
+      hunt.notebook = v.notebook.parse({ revision: 0, sections: [{ id: 'general', title: 'Trophy reminders' }, { id: 'ch1', title: 'Chapter 1' }, { id: 'ch2', title: 'Chapter 2' }, { id: 'ch3', title: 'Chapter 3' }], items: [
+        { id: 'finish', sectionId: 'general', title: 'Complete the game', category: 'Story', done: false },
+        { id: 'crush', sectionId: 'general', title: 'Finish on Crushing difficulty', category: 'Story', missable: false },
+        { id: 'treasure1', sectionId: 'ch1', title: 'First treasure', category: 'Treasures', done: true },
+        { id: 'photo1', sectionId: 'ch1', title: 'Photo opportunity #1', category: 'Photos', done: true },
+        { id: 'treasure2', sectionId: 'ch2', title: 'Silver cigarette case', category: 'Treasures', done: false, notes: 'Check the rooftop before moving on.' },
+        { id: 'photo2', sectionId: 'ch2', title: 'Photo opportunity #2', category: 'Photos', done: false },
+        { id: 'conv', sectionId: 'ch3', title: 'Optional conversations', category: 'Conversations', type: 'counter', target: 4, current: 2, missable: true },
+      ] }); await hunt.save()
+    }
+  }
+  for (const [nickname, color, model] of [['Living room PS5', 'White', 'Standard'], ['Bedroom PS5', 'Black', 'Slim']]) await m.HardwareUnit.create({ ...v.hardware.parse({ platformId: 'ps5', nickname, color, model, storage: '1 TB', condition: 'excellent' }), userId: user._id })
+  await m.HardwareUnit.create({ ...v.hardware.parse({ platformId: 'gamecube', nickname: 'Original GameCube', color: 'Indigo', condition: 'good' }), userId: user._id })
+  const server = app.listen(4051, '127.0.0.1', () => console.log('Disposable demo API: http://localhost:4051'))
+  const { pathToFileURL } = require('node:url')
+  const { createServer } = await import(pathToFileURL(require.resolve('vite', { paths: [path.join(__dirname, '../../client')] })).href)
+  const vite = await createServer({ root: path.join(__dirname, '../../client'), configFile: path.join(__dirname, '../../client/vite.config.js'), server: { host: '127.0.0.1', port: 5041, open: false, strictPort: true, proxy: { '/api': { target: 'http://127.0.0.1:4051', changeOrigin: true } } } })
+  await vite.listen(); console.log('Game Log demo: http://localhost:5041/ (sample data resets on restart)')
+  let stopping = false
+  async function stop() { if (stopping) return; stopping = true; await vite.close(); await new Promise(resolve => server.close(resolve)); await sessionStore.close(); await connection.close(); await mongo.stop(); process.exit(0) }
+  process.on('SIGINT', stop); process.on('SIGTERM', stop)
+}
+start().catch(error => { console.error(error); process.exitCode = 1 })

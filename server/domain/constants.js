@@ -1,0 +1,32 @@
+const PLATFORM_CATALOG = [
+  ['ps5', 'PlayStation 5', 'Sony', 'playstation', 167, ['Standard', 'Digital', 'Slim', 'Pro']],
+  ['ps4', 'PlayStation 4', 'Sony', 'playstation', 48, ['Original', 'Slim', 'Pro']],
+  ['ps3', 'PlayStation 3', 'Sony', 'playstation', 9, ['Original', 'Slim', 'Super Slim']],
+  ['ps2', 'PlayStation 2', 'Sony', 'none', 8, ['Original', 'Slim']],
+  ['ps1', 'PlayStation', 'Sony', 'none', 7, ['Original', 'PS one']],
+  ['vita', 'PlayStation Vita', 'Sony', 'playstation', 46, ['OLED', 'Slim', 'TV']],
+  ['psp', 'PlayStation Portable', 'Sony', 'none', 38, ['1000', '2000', '3000', 'Go']],
+  ['xbox-series', 'Xbox Series X/S', 'Microsoft', 'xbox', 169, ['Series X', 'Series S']],
+  ['xbox-one', 'Xbox One', 'Microsoft', 'xbox', 49, ['Original', 'S', 'X']],
+  ['xbox360', 'Xbox 360', 'Microsoft', 'xbox', 12, ['Original', 'S', 'E']],
+  ['xbox', 'Xbox', 'Microsoft', 'none', 11, ['Original']],
+  ['switch2', 'Nintendo Switch 2', 'Nintendo', 'none', 508, ['Standard']],
+  ['switch', 'Nintendo Switch', 'Nintendo', 'none', 130, ['Standard', 'Lite', 'OLED']],
+  ['wiiu', 'Wii U', 'Nintendo', 'none', 41, ['Basic', 'Deluxe']],
+  ['wii', 'Wii', 'Nintendo', 'none', 5, ['Original', 'Mini']],
+  ['gamecube', 'Nintendo GameCube', 'Nintendo', 'none', 21, ['Standard']],
+  ['n64', 'Nintendo 64', 'Nintendo', 'none', 4, ['Standard']],
+  ['snes', 'Super Nintendo', 'Nintendo', 'none', 19, ['Standard']],
+  ['nes', 'Nintendo Entertainment System', 'Nintendo', 'none', 18, ['Standard']],
+  ['3ds', 'Nintendo 3DS', 'Nintendo', 'none', 37, ['3DS', '3DS XL', 'New 3DS', '2DS']],
+  ['ds', 'Nintendo DS', 'Nintendo', 'none', 20, ['DS', 'Lite', 'DSi']],
+  ['gba', 'Game Boy Advance', 'Nintendo', 'none', 24, ['Original', 'SP', 'Micro']],
+  ['gb', 'Game Boy', 'Nintendo', 'none', 33, ['Original', 'Pocket', 'Color']],
+  ['dreamcast', 'Dreamcast', 'Sega', 'none', 23, ['Standard']],
+  ['genesis', 'Mega Drive / Genesis', 'Sega', 'none', 29, ['Model 1', 'Model 2']],
+  ['pc', 'PC', 'Other', 'steam', 6, ['Desktop', 'Laptop', 'Handheld']],
+  ['mac', 'Mac', 'Apple', 'steam', 14, ['Desktop', 'Laptop']],
+].map(([id, name, manufacturer, service, igdbId, variants]) => ({ _id: id, name, manufacturer, service, igdbId, variants, userId: null }))
+const SERVICES = ['none', 'playstation', 'xbox', 'steam', 'epic', 'gog', 'nintendo', 'custom']
+const STATUSES = ['planned', 'in-progress', 'dropped', 'completed', 'priority']
+module.exports = { PLATFORM_CATALOG, SERVICES, STATUSES }

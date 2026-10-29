@@ -4,7 +4,7 @@
     "main": "index.js",
     "private": true,
     "engines": {
-        "node": ">=20",
+        "node": ">=24.15.0",
         "npm": ">=10"
     },
     "scripts": {
@@ -13,7 +13,9 @@
         "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
         "build:client": "cd client && npm run build",
         "build": "npm run build:client",
-        "start": "node server/server.js"
+        "start": "node server/server.js",
+        "test": "npm run test -w server && npm run test -w client",
+        "demo": "node server/scripts/demo.js"
     },
     "workspaces": [
         "server",
