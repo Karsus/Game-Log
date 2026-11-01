@@ -8,6 +8,8 @@ Cards, tables, game details, hunt views, and CSV exports show each source's Acti
 
 Memberships are separate account data, saved through authenticated, CSRF-protected `PUT /api/memberships` and included in session/bootstrap responses. JSON backups optionally restore memberships; preview and confirmation disclose replacement, while older backups preserve current settings. Active tiers or saved expiration dates require a valid account time zone in imports.
 
+Validation: **178 tests pass** (50 server, 128 client), production build passes, and whitespace checks pass. Coverage includes activation/deactivation/renewal, tier changes, multiple sources, inclusive expiry and daylight-saving boundaries, focus/midnight refreshes, failed saves, preference-response races, account isolation, authentication/CSRF, persistence, and old/new backup imports with rollback. Server tests use disposable MongoDB outside the sandbox because sandbox localhost access is denied.
+
 The isolated demo on ports 4053/5043 verified inactive defaults, activation, tier downgrade coverage, expiration and reload persistence, independent sources, zero owned copies, and preserved 18/40 hunt progress. Desktop and 390px mobile checks passed with no page horizontal overflow. Screenshots: `.runtime/qa/memberships-desktop.png`, `.runtime/qa/memberships-mobile.png`, and `.runtime/qa/membership-hunt-desktop.png`. The QA demo and tab are stopped; existing app processes and personal data were preserved. Next review: open **Settings → My subscriptions**. Automatic provider syncing, catalog departures, billing, and renewal notifications remain out of scope.
 
 ## Subscription access — November 1, 2026
