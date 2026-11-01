@@ -89,7 +89,7 @@ export default function DeviceIllustration({ platform, model = '' }) {
   const isVitaTV = platformId === 'vita' && (variant === 'tv' || variant.includes('vita tv'))
   const label = [platform?.name || 'Game console', model].filter(Boolean).join(' ')
   let assetIcon, assetCredit
-  if (platform?._id === 'ps5' && ['', 'standard', 'basic', 'base', 'original'].includes(variant)) {
+  if (platform?._id === 'ps5') {
     assetIcon = ps5StandardIcon
   } else if (platform?._id === 'switch' && !variant.includes('lite')) {
     assetIcon = nintendoSwitchIcon
