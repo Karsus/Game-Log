@@ -7,6 +7,7 @@ const path = require('node:path')
 const { createApp } = require('../app')
 const { migrateDifficulties } = require('../domain/difficulty')
 const { validateBackup } = require('../backup')
+const { membershipDefaults, SUBSCRIPTION_SERVICES } = require('../domain/memberships')
 let mongo, connection, app, store, models, alice, bob, game, hunt
 async function account(email) {
   const agent = request.agent(app)
@@ -155,4 +156,222 @@ test('deleting a game cascades only its owned copies and hunts', async () => {
   const state = (await alice.agent.get('/api/bootstrap')).body
   assert.equal(state.hunts.length, 0); assert.equal(state.copies.length, 0); assert.equal(state.hardware.length, 2)
   assert.ok((await bob.agent.get('/api/bootstrap')).body.hunts.length > 0)
+})
+
+test('subscription access persists independently of owned copies and trophy progress', async () => {
+  const owner = await account('subscriptions@example.com')
+  const subscriptions = SUBSCRIPTION_SERVICES.map(service => ({ service }))
+  const entry = (await send(owner, 'post', '/api/games', { title: 'Subscription game', subscriptions }).expect(201)).body
+  assert.deepEqual(entry.subscriptions, subscriptions)
+  const progress = (await send(owner, 'post', '/api/hunts', { gameId: entry._id, platformId: 'ps5', service: 'playstation', earned: 5, total: 20 }).expect(201)).body
+  let state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(state.games[0].subscriptions, subscriptions)
+  assert.equal(state.copies.length, 0)
+  const copy = (await send(owner, 'post', '/api/copies', { gameId: entry._id, platformId: 'ps5', format: 'physical' }).expect(201)).body
+  const edited = (await send(owner, 'patch', `/api/games/${entry._id}`, { notes: 'Keep access' }).expect(200)).body
+  assert.deepEqual(edited.subscriptions, subscriptions)
+  await send(owner, 'patch', `/api/games/${entry._id}`, { subscriptions: [{ service: 'game-pass' }] }).expect(200)
+  await send(owner, 'patch', `/api/games/${entry._id}`, { subscriptions: [] }).expect(200)
+  state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(state.games[0].subscriptions, [])
+  assert.equal(state.copies.length, 1); assert.equal(state.copies[0]._id, copy._id); assert.equal(state.copies[0].state, 'owned')
+  assert.equal(state.hunts[0]._id, progress._id); assert.equal(state.hunts[0].earned, 5)
+})
+
+test('subscription validation rejects unsupported services, duplicates, and changes by other accounts', async () => {
+  const owner = await account('subscription-validation@example.com')
+  const entry = (await send(owner, 'post', '/api/games', { title: 'Legacy-compatible game' }).expect(201)).body
+  assert.deepEqual(entry.subscriptions, [])
+  const valid = { service: 'ps-plus-basic' }
+  for (const subscriptions of [
+    [{ service: 'unsupported' }],
+    [{ service: 'ps-plus' }],
+    [valid, valid],
+    [{}],
+  ]) {
+    await send(owner, 'post', '/api/games', { title: 'Invalid subscription', subscriptions }).expect(400)
+    await send(owner, 'patch', `/api/games/${entry._id}`, { subscriptions }).expect(400)
+  }
+  await send(bob, 'patch', `/api/games/${entry._id}`, { subscriptions: [valid] }).expect(404)
+  const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.equal(state.games.length, 1); assert.deepEqual(state.games[0].subscriptions, [])
+})
+
+test('subscription backups preserve game-level services and accept older records', async () => {
+  const owner = await account('subscription-backup@example.com'), destination = await account('subscription-import@example.com')
+  const subscriptions = [{ service: 'game-pass' }, { service: 'ps-plus-premium' }]
+  await send(owner, 'post', '/api/games', { title: 'Backup subscription', subscriptions }).expect(201)
+  const backup = (await owner.agent.get('/api/backups/export').expect(200)).body
+  assert.deepEqual(backup.games[0].subscriptions, subscriptions)
+  const legacy = structuredClone(backup)
+  delete legacy.games[0].subscriptions
+  assert.deepEqual(validateBackup(legacy).games[0].subscriptions, [])
+  await send(destination, 'post', '/api/backups/preview', legacy).expect(200)
+  for (const invalid of [
+    [{}],
+    [subscriptions[0], subscriptions[0]],
+    [{ service: 'invalid' }],
+  ]) {
+    const broken = structuredClone(backup)
+    broken.games[0].subscriptions = invalid
+    await send(destination, 'post', '/api/backups/preview', broken).expect(400)
+    await send(destination, 'post', '/api/backups/import', broken).expect(400)
+  }
+  await send(destination, 'post', '/api/backups/import', backup).expect(201)
+  const state = (await destination.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(state.games[0].subscriptions, subscriptions)
+  assert.equal(state.copies.length, 0)
+  await send(destination, 'post', '/api/backups/import', legacy).expect(201)
+  const legacyState = (await destination.agent.get('/api/bootstrap').expect(200)).body
+  assert.equal(legacyState.games.length, 2)
+  assert.ok(legacyState.games.some(g => g.subscriptions.length === 0))
+})
+
+test('subscription filters save and restore for library and hunts', async () => {
+  const owner = await account('subscription-filters@example.com')
+  for (const ownership of ['subscription', 'ps-plus', ...SUBSCRIPTION_SERVICES]) {
+    await send(owner, 'put', '/api/preferences', { catalog: { ownership }, hunts: { ownership } }).expect(200)
+    const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+    assert.equal(state.user.preferences.catalog.ownership, ownership)
+    assert.equal(state.user.preferences.hunts.ownership, ownership)
+  }
+})
+
+test('legacy accounts expose inactive memberships without changing stored data', async () => {
+  const owner = await account('legacy-memberships@example.com')
+  await models.Account.collection.updateOne({ _id: new mongoose.Types.ObjectId(owner.id) }, { $unset: { memberships: '' } })
+  const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(state.user.memberships, membershipDefaults())
+  assert.deepEqual((await owner.agent.get('/api/auth/session').expect(200)).body.user.memberships, membershipDefaults())
+  assert.deepEqual((await owner.agent.get('/api/backups/export').expect(200)).body.memberships, membershipDefaults())
+  assert.equal((await models.Account.collection.findOne({ _id: new mongoose.Types.ObjectId(owner.id) })).memberships, undefined)
+})
+
+test('memberships require authentication and CSRF and update only the session account', async () => {
+  const owner = await account('membership-owner@example.com'), other = await account('membership-other@example.com')
+  const value = { timeZone: 'America/Mexico_City', gamePass: { tier: 'game-pass-ultimate', activeUntil: '2028-02-29' }, psPlus: { tier: 'ps-plus-premium', activeUntil: null } }
+  const anonymous = request.agent(app), token = (await anonymous.get('/api/auth/session').expect(200)).body.csrf
+  await anonymous.put('/api/memberships').set('X-CSRF-Token', token).send(value).expect(401)
+  await owner.agent.put('/api/memberships').send(value).expect(403)
+  await send(owner, 'put', '/api/memberships', { ...value, userId: other.id }).expect(400)
+  const saved = (await send(owner, 'put', '/api/memberships', value).expect(200)).body
+  assert.equal(saved._id, owner.id); assert.equal(saved.passwordHash, undefined)
+  assert.deepEqual(saved.memberships, value)
+  assert.deepEqual((await owner.agent.get('/api/bootstrap').expect(200)).body.user.memberships, value)
+  assert.deepEqual((await other.agent.get('/api/bootstrap').expect(200)).body.user.memberships, membershipDefaults())
+  await send(owner, 'put', '/api/preferences', { theme: 'light', catalog: { ownership: 'game-pass-pc' } }).expect(200)
+  assert.deepEqual((await owner.agent.get('/api/bootstrap').expect(200)).body.user.memberships, value)
+  const inactive = { ...membershipDefaults(), timeZone: 'UTC' }
+  await send(owner, 'put', '/api/memberships', inactive).expect(200)
+  const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(state.user.memberships, inactive)
+  assert.equal(state.user.preferences.theme, 'light'); assert.equal(state.user.preferences.catalog.ownership, 'game-pass-pc')
+})
+
+test('membership changes preserve game tags, copies, hunt progress, and notebooks', async () => {
+  const owner = await account('membership-history@example.com')
+  const entry = (await send(owner, 'post', '/api/games', { title: 'Keep my history', subscriptions: SUBSCRIPTION_SERVICES.map(service => ({ service })) }).expect(201)).body
+  await send(owner, 'post', '/api/copies', { gameId: entry._id, platformId: 'ps5', format: 'physical' }).expect(201)
+  const progress = (await send(owner, 'post', '/api/hunts', { gameId: entry._id, platformId: 'ps5', service: 'playstation', earned: 7, total: 20, status: 'in-progress' }).expect(201)).body
+  await send(owner, 'put', `/api/hunts/${progress._id}/notebook`, { revision: 0, sections: [{ id: 'general', title: 'General' }], items: [{ id: 'keep', sectionId: 'general', title: 'Keep my checked item', done: true }] }).expect(200)
+  const before = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  for (const value of [
+    { timeZone: 'America/Mexico_City', gamePass: { tier: 'game-pass-ultimate', activeUntil: null }, psPlus: { tier: 'ps-plus-premium', activeUntil: '2026-11-01' } },
+    { ...membershipDefaults(), timeZone: 'America/Mexico_City' },
+    { timeZone: 'America/Mexico_City', gamePass: { tier: 'game-pass-pc', activeUntil: '2026-12-01' }, psPlus: { tier: 'ps-plus-basic', activeUntil: null } },
+  ]) await send(owner, 'put', '/api/memberships', value).expect(200)
+  const after = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  for (const key of ['games', 'copies', 'hunts']) assert.deepEqual(after[key], before[key])
+})
+
+test('membership validation checks real calendar dates, provider tiers, and IANA time zones', async () => {
+  const owner = await account('membership-validation@example.com')
+  const value = { timeZone: 'America/Mexico_City', gamePass: { tier: 'game-pass-premium', activeUntil: null }, psPlus: { tier: 'ps-plus-extra', activeUntil: null } }
+  for (const invalidDate of ['2026-02-29', '2100-02-29', '2028-02-30', '2026-04-31', '2026-00-10', '2026-13-10', '2026-01-00', '2026-1-01', '2026-11-01T00:00:00Z', '']) {
+    await send(owner, 'put', '/api/memberships', { ...value, gamePass: { ...value.gamePass, activeUntil: invalidDate } }).expect(400)
+  }
+  for (const invalidZone of [null, '', 'Not/A_Zone', '+06:00', 123]) await send(owner, 'put', '/api/memberships', { ...value, timeZone: invalidZone }).expect(400)
+  await send(owner, 'put', '/api/memberships', { ...value, gamePass: { tier: 'ps-plus-basic', activeUntil: null } }).expect(400)
+  await send(owner, 'put', '/api/memberships', { ...value, psPlus: { tier: 'game-pass', activeUntil: null } }).expect(400)
+  await send(owner, 'put', '/api/memberships', { timeZone: 'UTC' }).expect(400)
+  assert.deepEqual((await owner.agent.get('/api/bootstrap').expect(200)).body.user.memberships, membershipDefaults())
+  for (const activeUntil of ['2000-02-29', '2028-02-29', '2026-04-30', null]) {
+    const valid = { ...value, gamePass: { ...value.gamePass, activeUntil }, psPlus: { ...value.psPlus, activeUntil } }
+    assert.deepEqual((await send(owner, 'put', '/api/memberships', valid).expect(200)).body.memberships, valid)
+  }
+})
+
+test('backup membership previews distinguish explicit restoration from older backups', async () => {
+  const owner = await account('membership-backup@example.com'), destination = await account('membership-restore@example.com')
+  const original = { timeZone: 'America/Mexico_City', gamePass: { tier: 'game-pass-essential', activeUntil: '2028-02-29' }, psPlus: { tier: 'ps-plus-basic', activeUntil: null } }
+  const current = { timeZone: 'Europe/London', gamePass: { tier: 'game-pass-ultimate', activeUntil: null }, psPlus: { tier: 'ps-plus-extra', activeUntil: '2027-01-01' } }
+  await send(owner, 'put', '/api/memberships', original).expect(200)
+  await send(destination, 'put', '/api/memberships', current).expect(200)
+  await send(owner, 'post', '/api/games', { title: 'Preserved backup tags', subscriptions: [{ service: 'game-pass-pc' }, { service: 'ps-plus-basic' }] }).expect(201)
+  const backup = (await owner.agent.get('/api/backups/export').expect(200)).body
+  assert.deepEqual(backup.memberships, original)
+  const legacy = structuredClone(backup); delete legacy.memberships
+  assert.equal(validateBackup(legacy).memberships, undefined)
+  const oldPreview = (await send(destination, 'post', '/api/backups/preview', legacy).expect(200)).body
+  assert.equal(oldPreview.restoresMemberships, false); assert.equal(oldPreview.memberships, undefined)
+  await send(destination, 'post', '/api/backups/import', legacy).expect(201)
+  assert.deepEqual((await destination.agent.get('/api/bootstrap').expect(200)).body.user.memberships, current)
+  const preview = (await send(destination, 'post', '/api/backups/preview', backup).expect(200)).body
+  assert.equal(preview.restoresMemberships, true); assert.deepEqual(preview.memberships, original)
+  assert.deepEqual((await destination.agent.get('/api/bootstrap').expect(200)).body.user.memberships, current)
+  await send(destination, 'post', '/api/backups/import', backup).expect(201)
+  const restored = (await destination.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(restored.user.memberships, original)
+  assert.ok(restored.games.every(g => JSON.stringify(g.subscriptions) === JSON.stringify(backup.games[0].subscriptions)))
+  assert.deepEqual((await owner.agent.get('/api/bootstrap').expect(200)).body.user.memberships, original)
+  const inactiveBackup = { ...backup, games: [], memberships: membershipDefaults() }
+  await send(destination, 'post', '/api/backups/import', inactiveBackup).expect(201)
+  assert.deepEqual((await destination.agent.get('/api/bootstrap').expect(200)).body.user.memberships, membershipDefaults())
+  for (const invalid of [null, { ...original, timeZone: 'Invalid/Zone' }, { ...original, psPlus: { tier: 'ps-plus-extra', activeUntil: '2026-02-29' } }]) {
+    await send(destination, 'post', '/api/backups/preview', { ...backup, memberships: invalid }).expect(400)
+    await send(destination, 'post', '/api/backups/import', { ...backup, memberships: invalid }).expect(400)
+  }
+  assert.deepEqual((await destination.agent.get('/api/bootstrap').expect(200)).body.user.memberships, membershipDefaults())
+})
+
+test('backup memberships require a saved time zone when tiers or expiry dates are present', async () => {
+  const owner = await account('membership-backup-timezone@example.com')
+  const current = { timeZone: 'America/Mexico_City', gamePass: { tier: 'game-pass-ultimate', activeUntil: '2027-01-01' }, psPlus: { tier: 'none', activeUntil: null } }
+  await send(owner, 'put', '/api/memberships', current).expect(200)
+  const backup = (await owner.agent.get('/api/backups/export').expect(200)).body
+  backup.games = [{ _id: new mongoose.Types.ObjectId().toString(), title: 'Do not import invalid membership snapshot' }]
+  for (const provider of ['gamePass', 'psPlus']) {
+    for (const membership of [{ tier: provider === 'gamePass' ? 'game-pass-ultimate' : 'ps-plus-premium', activeUntil: null }, { tier: 'none', activeUntil: '2027-01-01' }]) {
+      for (const omitTimeZone of [false, true]) {
+        const settings = { ...membershipDefaults(), [provider]: membership }
+        if (omitTimeZone) delete settings.timeZone
+        const invalid = { ...backup, memberships: settings }
+        await send(owner, 'post', '/api/backups/preview', invalid).expect(400)
+        await send(owner, 'post', '/api/backups/import', invalid).expect(400)
+      }
+    }
+  }
+  const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(state.user.memberships, current)
+  assert.equal(state.games.length, 0)
+  assert.deepEqual(validateBackup({ ...backup, memberships: membershipDefaults() }).memberships, membershipDefaults())
+  const legacy = { ...backup }; delete legacy.memberships
+  assert.equal(validateBackup(legacy).memberships, undefined)
+})
+
+test('failed backup membership restoration rolls back imported collection records', async () => {
+  const owner = await account('membership-atomic@example.com')
+  const backup = (await owner.agent.get('/api/backups/export').expect(200)).body
+  backup.games = [{ _id: new mongoose.Types.ObjectId().toString(), title: 'Should roll back', subscriptions: [{ service: 'game-pass-ultimate' }] }]
+  backup.memberships = { timeZone: 'UTC', gamePass: { tier: 'game-pass-ultimate', activeUntil: null }, psPlus: { tier: 'none', activeUntil: null } }
+  const updateOne = models.Account.updateOne
+  models.Account.updateOne = function (filter, update, options) {
+    if (String(filter._id) === owner.id && update.$set.memberships) throw new Error('Simulated membership write failure')
+    return updateOne.call(this, filter, update, options)
+  }
+  try { await send(owner, 'post', '/api/backups/import', backup).expect(500) }
+  finally { models.Account.updateOne = updateOne }
+  const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.equal(state.games.length, 0)
+  assert.deepEqual(state.user.memberships, membershipDefaults())
 })

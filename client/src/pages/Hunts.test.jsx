@@ -44,3 +44,20 @@ it('supports hundreds of read-only rows and unmounts a collapsed list', () => {
   expect(screen.queryAllByRole('article')).toHaveLength(0)
   expect(screen.getByText('300')).toBeTruthy()
 })
+
+it('shows and filters game-level subscription access across hunt platforms', () => {
+  context.data.games[0].subscriptions = [{ service: 'ps-plus-basic' }]
+  context.data.games[1].subscriptions = [{ service: 'ps-plus-premium' }]
+  context.data.platforms.push({ _id: 'pc', name: 'PC', service: 'steam' })
+  context.data.hunts.push({ ...makeHunt('pc-hunt', 'g1', 5, 'planned'), platformId: 'pc', service: 'steam' })
+  render(<MemoryRouter><Hunts /></MemoryRouter>)
+  const basicColumn = screen.getByRole('region', { name: 'Difficulty 2' }), pcColumn = screen.getByRole('region', { name: 'Difficulty 5' })
+  expect(within(basicColumn).getByText('PS Plus Basic · Inactive')).toBeTruthy()
+  expect(within(pcColumn).getByText('PS Plus Basic · Inactive')).toBeTruthy()
+  fireEvent.change(screen.getByLabelText('Ownership filter'), { target: { value: 'ps-plus-premium' } })
+  expect(screen.getByRole('article', { name: 'Second game' })).toBeTruthy()
+  expect(screen.queryByRole('article', { name: 'First game' })).toBeNull()
+  fireEvent.change(screen.getByLabelText('Ownership filter'), { target: { value: 'subscription' } })
+  expect(screen.getAllByRole('article')).toHaveLength(3)
+  expect(screen.getByRole('region', { name: 'Difficulty 5' })).toBeTruthy()
+})

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupHunts, DEFAULT_FILTERS, catalogGames, parseFilters, notebookProgress, itemDone } from './domain'
+import { groupHunts, DEFAULT_FILTERS, catalogGames, parseFilters, notebookProgress, itemDone, ownership, activeCopy, gameSubscriptions, subscriptionLabels, accessLabel } from './domain'
 import { csv } from './api'
 const games = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Hidden'].map((title, i) => ({ _id: `g${i}`, title, showOnBoard: i !== 5, wishlistPlatforms: i === 1 ? ['ps5'] : [], releases: [{ platformId: i === 2 ? 'ps4' : 'ps5' }], createdAt: `2026-01-0${i + 1}` }))
 const hunts = [
@@ -60,6 +60,132 @@ describe('catalog and preferences', () => {
     expect(catalogGames(data, { ...DEFAULT_FILTERS, ownership: 'wishlist' }).map(g => g.title)).toEqual(['Beta'])
   })
 })
+describe('subscription access', () => {
+  const collection = {
+    ...data,
+    games: games.map(game => ({ ...game, subscriptions: game._id === 'g0' ? [{ service: 'game-pass' }, { service: 'ps-plus-basic' }] : game._id === 'g1' ? [{ service: 'ps-plus-premium' }] : [] })),
+  }
+  const catalogIds = (filters = {}, source = collection) => catalogGames(source, { ...DEFAULT_FILTERS, ...filters }).map(game => game._id)
+  const huntRows = (filters = {}, source = collection) => groupHunts(source, { ...DEFAULT_FILTERS, ...filters }).flatMap(group => group.rows)
+
+  it('treats old games without subscriptions as having no subscription access', () => {
+    expect(gameSubscriptions(games[0])).toEqual([])
+    expect(subscriptionLabels(games[0])).toEqual([])
+    expect(catalogIds({ ownership: 'subscription' }, data)).toEqual([])
+    expect(huntRows({ ownership: 'subscription' }, data)).toEqual([])
+    expect(ownership(data, 'g0')).toBe(true)
+    expect(accessLabel(data, games[1])).toBe('Not owned')
+  })
+
+  it('keeps subscription-only titles and licenses out of owned counts', () => {
+    expect(ownership(collection, 'g1')).toBe(false)
+    expect(ownership(collection, 'g1', 'ps5')).toBe(false)
+    expect(catalogIds({ ownership: 'owned' })).toEqual(['g0'])
+    expect(catalogIds({ ownership: 'unowned' })).toContain('g1')
+    const active = collection.copies.filter(activeCopy)
+    expect(new Set(active.map(copy => copy.gameId)).size).toBe(1)
+    expect(active).toHaveLength(1)
+    expect(accessLabel(collection, collection.games[1])).toBe('PS Plus Premium · Inactive')
+  })
+
+  it('keeps subscription labels game-wide while ownership follows the platform copy', () => {
+    expect(ownership(collection, 'g0', 'ps5')).toBe(true)
+    expect(ownership(collection, 'g0', 'pc')).toBe(false)
+    expect(subscriptionLabels(collection.games[0])).toEqual(['Game Pass', 'PS Plus Basic'])
+    expect(gameSubscriptions(collection.games[0])).toEqual([{ service: 'game-pass' }, { service: 'ps-plus-basic' }])
+    expect(subscriptionLabels(collection.games[1])).toEqual(['PS Plus Premium'])
+    expect(accessLabel(collection, collection.games[0])).toBe('Owned · Game Pass · Inactive; PS Plus Basic · Inactive')
+    expect(accessLabel(collection, collection.games[0], 'pc')).toBe('Game Pass · Inactive; PS Plus Basic · Inactive')
+    expect(accessLabel(collection, collection.games[0], 'ps5')).toBe('Owned · Game Pass · Inactive; PS Plus Basic · Inactive')
+    expect(catalogIds({ ownership: 'subscription' })).toEqual(['g0', 'g1'])
+    expect(catalogIds({ ownership: 'game-pass' })).toEqual(['g0'])
+    expect(catalogIds({ ownership: 'ps-plus' })).toEqual(['g0', 'g1'])
+  })
+
+  it('combines game-wide provider filters with existing platform and copy-format filters', () => {
+    expect(catalogIds({ ownership: 'game-pass', platforms: ['ps5'] })).toEqual(['g0'])
+    expect(catalogIds({ ownership: 'game-pass', platforms: ['pc'] })).toEqual(['g0'])
+    expect(catalogIds({ ownership: 'ps-plus', platforms: ['pc'] })).toEqual(['g0'])
+    expect(catalogIds({ ownership: 'unowned', platforms: ['pc'] })).toContain('g0')
+    expect(catalogIds({ ownership: 'subscription', platforms: ['ps5'], format: 'physical' })).toEqual(['g0'])
+    expect(catalogIds({ ownership: 'subscription', format: 'digital' })).toEqual([])
+  })
+
+  it('does not infer a platform from a subscription service', () => {
+    const source = { ...collection, games: [...collection.games, { _id: 'unassigned', title: 'Unassigned game', releases: [], wishlistPlatforms: [], subscriptions: [{ service: 'ps-plus-basic' }], createdAt: '2026-11-01' }] }
+    expect(catalogIds({ ownership: 'ps-plus-basic' }, source)).toContain('unassigned')
+    expect(catalogIds({ platforms: ['ps5'], ownership: 'ps-plus-basic' }, source)).toEqual(['g0'])
+    expect(catalogIds({ platforms: ['ps4'] })).not.toContain('g1')
+    expect(catalogIds({ platforms: ['ps4'], ownership: 'subscription' })).toEqual([])
+    expect(catalogIds({ platforms: ['ps4'], ownership: 'game-pass' })).toEqual([])
+  })
+
+  it('marks all hunts for a subscribed game while platform filters still select hunt platforms', () => {
+    expect(huntRows({ ownership: 'game-pass' }).map(hunt => hunt._id)).toEqual(['a', 'g'])
+    expect(huntRows({ ownership: 'ps-plus' }).map(hunt => hunt._id)).toEqual(['b', 'a', 'g'])
+    expect(huntRows({ ownership: 'subscription', platforms: ['pc'] })).toMatchObject([{ _id: 'g', owned: false, subscriptions: [{ service: 'game-pass' }, { service: 'ps-plus-basic' }] }])
+    expect(huntRows({ ownership: 'owned' })).toMatchObject([{ _id: 'a', owned: true, subscriptions: [{ service: 'game-pass' }, { service: 'ps-plus-basic' }] }])
+    expect(groupHunts(collection, { ...DEFAULT_FILTERS, ownership: 'subscription' }).map(group => group.difficulty)).toEqual(['2'])
+  })
+
+  it('removes access without losing games, hunts, progress, or owned copies', () => {
+    const source = structuredClone(collection)
+    source.hunts[0] = { ...source.hunts[0], earned: 12, total: 40, notebook: { revision: 2, sections: [{ id: 'main', title: 'Main' }], items: [{ id: 'done', sectionId: 'main', done: true }] } }
+    const original = structuredClone(source)
+    source.games[0].subscriptions = []
+    expect(catalogIds({ ownership: 'game-pass' }, source)).toEqual([])
+    expect(huntRows({ ownership: 'game-pass' }, source)).toEqual([])
+    expect(catalogIds({}, source)).toContain('g0')
+    expect(huntRows({}, source).find(hunt => hunt._id === 'a')).toMatchObject({ earned: 12, total: 40, notebook: original.hunts[0].notebook, owned: true, subscriptions: [] })
+    expect(source.hunts).toEqual(original.hunts)
+    expect(source.copies).toEqual(original.copies)
+  })
+
+  it('distinguishes all PS Plus tiers while the provider filter includes every tier', () => {
+    const source = structuredClone(collection)
+    source.games[2].subscriptions = [{ service: 'ps-plus-extra' }]
+    expect(accessLabel(source, source.games[2])).toBe('PS Plus Extra · Inactive')
+    expect(catalogIds({ ownership: 'ps-plus' }, source)).toEqual(['g0', 'g1', 'g2'])
+    expect(catalogIds({ ownership: 'ps-plus-basic' }, source)).toEqual(['g0'])
+    expect(catalogIds({ ownership: 'ps-plus-premium' }, source)).toEqual(['g1'])
+    expect(catalogIds({ ownership: 'ps-plus-extra' }, source)).toEqual(['g2'])
+    expect(catalogIds({ ownership: 'ps-plus-extra', platforms: ['ps5'] }, source)).toEqual([])
+    expect(huntRows({ ownership: 'ps-plus' }, source).map(hunt => hunt._id)).toEqual(['b', 'a', 'g', 'c'])
+    expect(huntRows({ ownership: 'ps-plus-basic' }, source).map(hunt => hunt._id)).toEqual(['a', 'g'])
+    expect(huntRows({ ownership: 'ps-plus-premium' }, source).map(hunt => hunt._id)).toEqual(['b'])
+    expect(huntRows({ ownership: 'ps-plus-extra' }, source).map(hunt => hunt._id)).toEqual(['c'])
+    expect(huntRows({ ownership: 'ps-plus-extra', platforms: ['ps5'] }, source)).toEqual([])
+  })
+
+  it('filters each Game Pass source separately and groups all tiers under Game Pass', () => {
+    const tiers = ['game-pass-essential', 'game-pass-premium', 'game-pass-pc', 'game-pass-ultimate']
+    const source = structuredClone(collection)
+    tiers.forEach((service, index) => { source.games[index + 1].subscriptions = [{ service }] })
+    expect(catalogIds({ ownership: 'game-pass' }, source).sort()).toEqual(['g0', 'g1', 'g2', 'g3', 'g4'])
+    tiers.forEach((service, index) => {
+      expect(catalogIds({ ownership: service }, source)).toEqual([`g${index + 1}`])
+      expect(huntRows({ ownership: service }, source).map(hunt => hunt.gameId)).toEqual([`g${index + 1}`])
+    })
+  })
+
+  it('derives membership activity without changing ownership or hiding inactive source records', () => {
+    const source = { ...collection, user: { memberships: { timeZone: 'UTC', gamePass: { tier: 'game-pass-pc', activeUntil: '2026-11-01' }, psPlus: { tier: 'none', activeUntil: null } } } }
+    const before = Date.parse('2026-11-01T23:59:59Z'), after = Date.parse('2026-11-02T00:00:00Z')
+    expect(accessLabel(source, source.games[0], undefined, before)).toBe('Owned · Game Pass · Active; PS Plus Basic · Inactive')
+    expect(accessLabel(source, source.games[0], undefined, after)).toBe('Owned · Game Pass · Inactive; PS Plus Basic · Inactive')
+    expect(ownership(source, 'g0')).toBe(true)
+    expect(ownership(source, 'g1')).toBe(false)
+    expect(catalogIds({ ownership: 'subscription' }, source)).toEqual(['g0', 'g1'])
+    expect(huntRows({ ownership: 'subscription' }, source).map(hunt => hunt._id)).toEqual(['b', 'a', 'g'])
+  })
+
+  it.each(['subscription', 'game-pass', 'game-pass-essential', 'game-pass-premium', 'game-pass-pc', 'game-pass-ultimate', 'ps-plus', 'ps-plus-basic', 'ps-plus-extra', 'ps-plus-premium'])('restores and overrides saved %s filters', filter => {
+    expect(parseFilters('', { ownership: filter }, 'catalog').ownership).toBe(filter)
+    expect(parseFilters(`ownership=${filter}`, { ownership: 'owned' }, 'hunts').ownership).toBe(filter)
+    expect(parseFilters('ownership=owned', { ownership: filter }, 'catalog').ownership).toBe('owned')
+  })
+})
+
 describe('notebook and export', () => {
   it('counts leaf items once and rolls up child completion', () => {
     const items = [{ id: 'p', done: false }, { id: 'a', parentId: 'p', done: true }, { id: 'b', parentId: 'p', type: 'counter', current: 2, target: 3 }]
