@@ -2,8 +2,9 @@ import React, { useState } from 'react'
 import { Search, Plus, X } from 'lucide-react'
 import { useApp } from '../state'
 import { api } from '../lib/api'
-import { SERVICE_LABELS, platformName, wholeDifficulty } from '../lib/domain'
+import { SERVICE_LABELS, SUBSCRIPTION_LABELS, platformName, wholeDifficulty } from '../lib/domain'
 import { FormModal, FormField, Field, Button, Cover, ChoiceGrid, ErrorMessage, statusOptions } from './ui'
+import ImageField, { useImageInput } from './ImageField'
 const services = Object.entries(SERVICE_LABELS).map(([value, label]) => ({ value, label }))
 const options = values => values.map(value => ({ value, label: value.charAt(0).toUpperCase() + value.slice(1).replaceAll('-', ' ') }))
 function useFields(initial) { const [values, setValues] = useState(initial); return { values, set: (key, value) => setValues(old => ({ ...old, [key]: value })), setValues } }
@@ -16,16 +17,18 @@ function AcquisitionFields({ form }) { return <><div className="form-grid"><Inpu
   ['lentTo', 'Lent to'],
 ]} /></div><FormField name="notes" label="Personal notes" type="textarea" {...form} /></> }
 export function GameEditor({ game, onClose, wishlist = false }) {
-  const { data, mutate } = useApp(), form = useFields({ title: '', description: '', cover: '', developer: '', publisher: '', genres: [], releaseYear: null, releases: [], igdbId: null, sourceUrl: '', wishlist, wishlistPlatforms: [], rating: null, notes: '', ...game })
+  const { data, mutate } = useApp(), form = useFields({ title: '', description: '', cover: '', developer: '', publisher: '', genres: [], releaseYear: null, releases: [], igdbId: null, sourceUrl: '', wishlist, wishlistPlatforms: [], subscriptions: [], rating: null, notes: '', ...game })
+  const cover = useImageInput(game?.cover || '', data.imageUploads)
   const [query, setQuery] = useState(''), [results, setResults] = useState([]), [searching, setSearching] = useState(false), [searchError, setSearchError] = useState(''), [searched, setSearched] = useState(false)
   async function search() { setSearching(true); setSearchError(''); try { setResults(await api(`/metadata/games?q=${encodeURIComponent(query)}`)); setSearched(true) } catch (e) { setSearchError(e.message) } finally { setSearching(false) } }
-  function pick(result) { const { platforms, ...fields } = result; form.setValues(old => ({ ...old, ...fields })); setResults([]); setSearched(false) }
+  function pick(result) { const { platforms, ...fields } = result; form.setValues(old => ({ ...old, ...fields })); cover.reset(fields.cover || ''); setResults([]); setSearched(false) }
   const selected = [...new Set(form.values.releases.map(r => r.platformId))]
-  return <FormModal title={game ? 'Edit game' : 'Add a game'} subtitle="One game, all your platforms. Add copies and hunts after saving." onClose={onClose} onSubmit={() => mutate(game ? `/games/${game._id}` : '/games', game ? 'PATCH' : 'POST', form.values, game ? 'Game updated' : 'Game added')} wide label={game ? 'Save game' : 'Add to library'}>
+  return <FormModal title={game ? 'Edit game' : 'Add a game'} subtitle="One game, all your platforms. Track subscription access here; add owned copies and hunts after saving." onClose={onClose} onSubmit={async () => mutate(game ? `/games/${game._id}` : '/games', game ? 'PATCH' : 'POST', { ...form.values, cover: await cover.resolve() }, game ? 'Game updated' : 'Game added')} wide label={game ? 'Save game' : 'Add to library'}>
     {!game && <div className="lookup"><Field label="Find game details"><div className="input-action"><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search IGDB, e.g. Gladius" onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (query.trim().length > 1) search() } }} /><Button type="button" onClick={search} busy={searching} disabled={query.trim().length < 2 || !data.metadataAvailable}><Search size={16} />Search</Button></div></Field>{!data.metadataAvailable && <small>Game lookup is not configured yet. All fields can be entered manually.</small>}<ErrorMessage>{searchError}</ErrorMessage>{results.length > 0 && <div className="lookup-results">{results.map(result => <button key={result.igdbId} type="button" onClick={() => pick(result)}><Cover game={result} small /><span><strong>{result.title}</strong><small>{result.releaseYear || 'Year unknown'} · {result.platforms.join(', ')}</small></span><Plus size={18} /></button>)}</div>}{searched && !results.length && <p className="muted">No games found. Try another name or enter details below.</p>}</div>}
     <FormField name="title" label="Game title" {...form} required maxLength={200} autoFocus={!!game} />
-    <div className="form-grid"><Inputs form={form} specs={[
-      ['releaseYear', 'Release year', 'number', { min: 1950, max: 2200 }], ['cover', 'Cover image URL', 'url'], ['developer', 'Developer'], ['publisher', 'Publisher'], ['rating', 'My rating / 10', 'number', { min: 0, max: 10, step: '0.5' }],
+    <SubscriptionFields form={form} />
+    <div className="form-grid"><FormField name="releaseYear" label="Release year" type="number" min={1950} max={2200} {...form} /><ImageField label="Cover image" image={cover} /><Inputs form={form} specs={[
+      ['developer', 'Developer'], ['publisher', 'Publisher'], ['rating', 'My rating / 10', 'number', { min: 0, max: 10, step: '0.5' }],
     ]} /><Field label="Genres"><input value={form.values.genres.join(', ')} onChange={e => form.set('genres', e.target.value.split(',').map(s => s.trim()))} placeholder="Role-playing, Strategy" /></Field></div>
     <FormField name="description" label="Description" type="textarea" {...form} />
     <Field label="Released on"><ChoiceGrid value={selected} options={data.platforms.map(p => ({ value: p._id, label: p.name }))} onChange={ids => form.set('releases', ids.map(platformId => form.values.releases.find(r => r.platformId === platformId) || { platformId, date: '' }))} /></Field>
@@ -35,6 +38,10 @@ export function GameEditor({ game, onClose, wishlist = false }) {
     <FormField name="notes" label="My notes" type="textarea" {...form} />
     {form.values.sourceUrl && <small>Metadata from <a href={form.values.sourceUrl} target="_blank" rel="noreferrer">IGDB</a>. Review and edit before saving.</small>}
   </FormModal>
+}
+function SubscriptionFields({ form }) {
+  const entries = form.values.subscriptions || []
+  return <Field className="subscription-source-options" label="Subscription access" hint="Keep the sources this game came from, even when your membership ends. Manage current memberships and expiration dates in Settings. Choose a specific Game Pass tier when known; plain Game Pass does not identify a tier. Basic is for claimed PS Plus monthly games."><ChoiceGrid value={entries.map(s => s.service)} options={Object.entries(SUBSCRIPTION_LABELS).map(([value, label]) => ({ value, label }))} onChange={services => form.set('subscriptions', services.map(service => ({ service })))} /></Field>
 }
 export function CopyEditor({ game, copy, onClose }) {
   const { mutate } = useApp(), form = useFields({ gameId: game._id, platformId: game.releases[0]?.platformId || '', format: 'physical', storefront: '', edition: '', region: '', packaging: 'unknown', ...acquisitionDefaults, ...copy })
@@ -46,11 +53,12 @@ export function CopyEditor({ game, copy, onClose }) {
 }
 export function HardwareEditor({ unit, platformId = '', onClose }) {
   const { data, mutate } = useApp(), form = useFields({ platformId, nickname: '', model: '', color: '', storage: '', region: '', serial: '', image: '', ...acquisitionDefaults, ...unit })
+  const image = useImageInput(unit?.image || '', data.imageUploads)
   const variants = data.platforms.find(p => p._id === form.values.platformId)?.variants || []
-  return <FormModal title={unit ? 'Edit console / device' : 'Add a console / device'} subtitle="Each unit gets its own record, even when you own the same platform twice." onClose={onClose} onSubmit={() => mutate(unit ? `/hardware/${unit._id}` : '/hardware', unit ? 'PATCH' : 'POST', form.values, 'Device saved')} wide>
+  return <FormModal title={unit ? 'Edit console / device' : 'Add a console / device'} subtitle="Each unit gets its own record, even when you own the same platform twice." onClose={onClose} onSubmit={async () => mutate(unit ? `/hardware/${unit._id}` : '/hardware', unit ? 'PATCH' : 'POST', { ...form.values, image: await image.resolve() }, 'Device saved')} wide>
     <div className="form-grid"><PlatformField form={form} /><FormField name="nickname" label="Nickname" {...form} required placeholder="Living room PS5" /><FormField name="model" label="Model / version" {...form} list="model-variants" /><datalist id="model-variants">{variants.map(v => <option key={v}>{v}</option>)}</datalist><Inputs form={form} specs={[
-      ['color', 'Color'], ['storage', 'Storage', 'text', { placeholder: '1 TB' }], ['region', 'Region'], ['serial', 'Serial number'], ['image', 'Photo URL', 'url'],
-    ]} /></div><AcquisitionFields form={form} />
+      ['color', 'Color'], ['storage', 'Storage', 'text', { placeholder: '1 TB' }], ['region', 'Region'], ['serial', 'Serial number'],
+    ]} /><ImageField label="Photo" image={image} /></div><AcquisitionFields form={form} />
   </FormModal>
 }
 export function PlatformEditor({ onClose }) {
@@ -60,12 +68,16 @@ export function PlatformEditor({ onClose }) {
 export function HuntEditor({ game, hunt, onClose, showOnBoard = true }) {
   const { data, mutate } = useApp()
   const defaultPlatform = game.releases[0]?.platformId || game.wishlistPlatforms[0] || ''
-  const defaults = data.platforms.find(p => p._id === defaultPlatform)
-  const service = defaults?.service || 'none'
+  function platformService(platformId) {
+    const services = game.subscriptions?.map(s => s.service) || [], gamePass = services.some(s => s.startsWith('game-pass')), psPlus = services.some(s => s.startsWith('ps-plus-'))
+    if (platformId === 'pc' && gamePass !== psPlus) return gamePass ? 'xbox' : 'playstation'
+    return data.platforms.find(p => p._id === platformId)?.service || 'none'
+  }
+  const service = platformService(defaultPlatform)
   const form = useFields({ gameId: game._id, platformId: defaultPlatform, service, variant: '', expectedDifficulty: null, expectedHours: null, status: 'planned', hasAchievements: service !== 'none', hasPlatinum: service === 'playstation', goal: service === 'playstation' ? 'platinum' : service === 'none' ? 'manual' : 'base', earned: 0, total: null, completion: { platinum: false, base: false, all: false, manual: false, completedOn: '' }, notes: '', ...hunt, expectedDifficulty: wholeDifficulty(hunt?.expectedDifficulty) })
   function set(key, value) {
     if (key === 'platformId' || key === 'service') {
-      const nextService = key === 'service' ? value : data.platforms.find(p => p._id === value)?.service || 'none'
+      const nextService = key === 'service' ? value : platformService(value)
       form.setValues(old => ({ ...old, [key]: value, service: nextService, hasAchievements: nextService !== 'none', hasPlatinum: nextService === 'playstation', goal: nextService === 'playstation' ? 'platinum' : nextService === 'none' ? 'manual' : 'base' }))
     } else if (key === 'hasAchievements' || key === 'hasPlatinum') {
       form.setValues(old => {

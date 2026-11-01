@@ -18,12 +18,14 @@ The demo uses `demo@gamelog.local` / `GameLog-demo-2026!`. It starts a disposabl
 ## Use your own persistent collection
 
 1. Install dependencies with `npm ci` if needed. Keep the existing `enviroments/.env`; the directory spelling is retained from the original project. For a fresh checkout, copy `enviroments/.env.example` to `enviroments/.env`.
-2. Set `MONGO_URI` to a MongoDB replica set, such as a MongoDB Atlas cluster or a local replica set. Transactions are used for imports, hunt activation, and cascading deletion; standalone MongoDB servers are not supported for these operations. Keep `PORT=4050`, `SITE_URL=http://localhost:5040`, `SERVER_URL=http://localhost:4050`, and `VITE_API_URL=/api` for the default development setup.
+2. Set `MONGO_URI` to your MongoDB database. A replica set, such as a MongoDB Atlas cluster or a local replica set, is recommended and required for backup imports and cascading game deletion. Creating and editing hunts also works on standalone MongoDB servers. Keep `PORT=4050`, `SITE_URL=http://localhost:5040`, `SERVER_URL=http://localhost:4050`, and `VITE_API_URL=/api` for the default development setup.
 3. Run `npm run dev`, open **http://localhost:5040**, and create your account. This starts an empty personal collection with the shared platform catalog. No demo records are inserted.
 
 The app stores collection data and sessions in MongoDB. A development session secret is generated in `.runtime/session-secret` when none is configured. Preserve that file to keep existing sessions across restarts. The API binds to localhost by default.
 
 If port 5040 is already in use, stop the previous development process you own before restarting. Vite deliberately fails instead of silently selecting a different port. If changing the development API port, also update the proxy target in `client/vite.config.js`.
+
+If Windows denies port 5040 with `EACCES`, set `SITE_URL=http://localhost:5173` in `enviroments/.env`, restart both development processes with `npm run dev`, and open that URL. Vite reads its development port from `SITE_URL`, keeping it aligned with the API's allowed origin and password-reset links. Choose another available port if needed; use the exact `SITE_URL` address in your browser.
 
 ## Collection model
 
@@ -31,11 +33,38 @@ If port 5040 is already in use, stop the previous development process you own be
 - **Owned hardware:** individual devices with their own nickname, model, storage, color, serial number, condition, acquisition details, location, and notes. Two PS5 units remain two records under one platform.
 - **Games:** one editable entry with release platforms, metadata, personal notes/rating, and wishlist selections.
 - **Copies:** any number of physical or digital copies per game/platform, with edition, region, packaging, storefront, purchase information, and owned/lent/sold/lost state. Owned and lent copies count toward the current collection.
+- **Subscription sources:** mark a game with Game Pass (or a specific Game Pass tier), PS Plus Basic, PS Plus Extra, or PS Plus Premium. These game-level choices do not need a platform and never count as owned games or copies. Use Basic for claimed monthly games and Extra/Premium for catalog access; choose the source of the game even if your membership includes a higher tier. A separate owned copy of the same game still counts normally.
 - **Hunts:** separate progress for each game, platform, achievement service, and optional edition/list label. Copies on the same platform can share a hunt; an additional label creates a separate regional or edition trophy list.
+
+In **Add game** or **Edit game**, check the applicable sources under **Subscription access** and save. Existing games also have an **Edit subscriptions** button. Keep these source labels when your membership ends: current membership status is managed separately in Settings. Platforms remain part of copies and hunt setup. A new PC hunt defaults to Xbox for a Game Pass-only game or PlayStation for a PS Plus-only game; when both providers are selected it keeps the platform default, and you can always choose a different achievement service.
+
+Library cards, tables, game details, hunt views, and CSV exports show **Active** or **Inactive** for each subscription source separately from ownership. Inactive games stay visible and editable; their tags, hunts, and notebooks are kept. Filter by all subscriptions, all Game Pass, all PS Plus, or a specific tier; these filters include active and inactive sources. Subscription selections apply to the whole game; platform filters still use its releases, copies, wishlist versions, and hunts. **Not owned** includes subscription games without an owned copy on the selected platform. Format filters apply to owned copies.
+
+## Current memberships and expiration
+
+Use **Settings → My subscriptions** to select your current Game Pass and PS Plus tiers, optionally enter an **Active through** date, then choose **Save subscriptions**. New and older accounts start with both memberships set to **None**, so subscription sources are inactive until configured. Failed saves keep the entered draft. Set a provider to None to disable it, select a tier to reactivate it, or update/clear an expired date to renew access.
+
+The end date is inclusive in the saved account time zone: access ends at the start of the following local day. Blank means no scheduled end. The first save uses your browser time zone; **Use browser time zone** changes the draft if you later want to update it. Status refreshes on load, local midnight, and when you return to the app. Saved membership status is separate from an unsaved form draft. Overlapping theme/filter and membership saves cannot overwrite each other's client state.
+
+| Membership | Sources marked active while the membership is current |
+| --- | --- |
+| PS Plus Basic | Basic |
+| PS Plus Extra | Basic, Extra |
+| PS Plus Premium | Basic, Extra, Premium |
+| Game Pass Essential (Core) | Essential (Core) |
+| Game Pass Premium (Standard) | Essential (Core), Premium (Standard) |
+| PC Game Pass | PC Game Pass |
+| Game Pass Ultimate | Essential (Core), Premium (Standard), PC Game Pass, Ultimate |
+
+Legacy **Game Pass** tags do not identify a tier and are marked active with any current Game Pass membership. Choose a specific source tier when known for precise coverage. Labels reflect the membership and sources you recorded; the app does not sync providers, check catalog departures, manage billing, or send renewal notifications. See the official [Xbox Game Pass plans](https://www.xbox.com/en-US/xbox-game-pass) and [PlayStation Plus plans](https://www.playstation.com/en-us/ps-plus/) for provider details.
+
+Memberships are stored separately from theme/filter preferences through authenticated `PUT /api/memberships`. Changing memberships never edits game sources, copies, or trophy progress. JSON backups include membership tiers, dates, and time zone. Import preview explicitly shows when these settings will replace your current memberships; older version-1 backups without memberships preserve the current settings.
 
 ## Hunt board rules
 
 Enable **Show on Trophy Hunts** from a game, or choose **Add hunt** on the board. The setup form includes **expected difficulty / 10** and **expected hours**. Difficulty accepts whole numbers from 1 to 10; hours can include decimals. Both can remain unknown. Estimates are your own, not official trophy-guide ratings.
+
+Hunt saving and board visibility are committed together on replica sets. On standalone MongoDB, the hunt saves first, followed by board visibility. If that second update fails, the form explicitly reports that the hunt was saved; reload the page and show the saved hunt again. Opening `/api/hunts` directly in the browser is not a creation test: creation uses `POST`, while the app loads hunts through `/api/bootstrap`.
 
 Difficulty is always the outer grouping. Columns run from easiest to hardest, with a separate unknown column last. Different whole-number difficulties never share a column. Legacy fractional estimates and saved difficulty filters round to the nearest integer on server startup (2.5 becomes 3); older JSON backups are normalized during import. Hours and progress are preserved. Horizontal scrolling on smaller screens preserves this layout. The board uses compact, read-only rows with the entire row colored by status. Click the pencil to edit in a dialog, or the game title to open its trophy log. Click a difficulty heading to collapse or expand its list; the count and column remain visible.
 
@@ -65,6 +94,28 @@ IGDB_CLIENT_SECRET=your-client-secret
 Follow the [official IGDB setup instructions](https://api-docs.igdb.com/#getting-started) when creating credentials. Do not use a `VITE_` prefix for secrets. Search fills the unsaved form with title, cover, summary, developers/publishers, genres, year, and mapped release platforms/dates. Review before saving. Unrecognized platforms can be added manually; the earliest dated regional release is used per mapped platform. The server caches results, renews OAuth tokens, and serializes API calls within IGDB's rate limit. Provider failures leave manual entry available.
 
 Gaming account synchronization and automatic trophy imports are not part of this version.
+
+## Image URLs and uploads
+
+Game covers and device photos each have **URL / Upload** choices, a preview, and **Clear image**. URL remains the default and works without an image host. Uploads use Cloudinary; images are publicly viewable by anyone with the direct image link, while your Game Log records still require sign-in.
+
+Choose one still JPEG, PNG, or WebP image up to **10 MiB** and **40 megapixels**. The image uploads only when you save the form. Canceling before Save sends no file. Switching between URL and Upload preserves each draft; Save uses the selected mode. Choosing an IGDB result replaces the image selection with its cover URL. Invalid uploads leave your draft available for correction or retry. If the upload succeeds but the record cannot save, retrying within that dialog reuses the uploaded URL.
+
+The server validates the image contents, rejects animation (including animated PNG/WebP), corrects orientation, fits the image within 1600 × 1600 without enlarging it, strips metadata, and stores a quality-85 WebP. Uploads require sign-in and CSRF protection and are limited to 30 attempts per account per 15 minutes. Cloudinary credentials are never sent to the browser. The demo does not load these credentials.
+
+### Cloudinary setup checkpoints
+
+For a guided setup, complete **one checkpoint at a time**, then review its result before continuing. Never paste your API secret into chat or commit it to Git.
+
+1. **Create the account:** use the [Cloudinary Free plan](https://cloudinary.com/pricing) and sign in to the Console. Stop when you can see your product environment. The current Free plan includes 25 monthly credits with no credit card required; storage, delivery, and processing consume the allowance. Review the current plan and usage in the Console.
+2. **Locate credentials:** find the cloud name and API key/secret for that product environment in the Console's API Keys settings. Keep them locally. Stop once you have located all three values.
+3. **Configure the server:** add `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` to your existing ignored `enviroments/.env`, preserving its other values. In production, set these in the server's environment/secret settings instead. Do not use a `VITE_` prefix or an unsigned upload preset. Stop after saving the configuration locally.
+4. **Restart:** restart the Game Log server and reload the browser. Open a game or device editor and select Upload. Stop when the file picker is enabled without the configuration message.
+5. **Verify:** select a small image, inspect its preview, save, and reload the page. Confirm the image remains visible and appears in Cloudinary under the server-generated `game-log/<account-id>/<random-id>` asset path. Review this result before trying more uploads.
+
+If uploads are unavailable, check that all three server variables are populated and restart the server. For provider errors, check the matching cloud name/API credentials, network access, and Cloudinary usage limits; your form remains open, and URL entry is still available. A file-validation error requires a supported still image within both limits. A rate-limit message requires waiting before retrying. Consult the [Cloudinary Node upload documentation](https://cloudinary.com/documentation/node_image_and_video_upload) for provider details.
+
+Replacing/clearing an image or deleting a record does **not** delete the hosted file. This preserves links in older JSON backups; a successful upload followed by an abandoned form can also leave a file in Cloudinary. Review assets and usage in Cloudinary's Media Library/Dashboard and delete files there only when no live records or retained backups need their URLs. JSON backups contain image links, **not the image files**; keep separate copies of originals you want to preserve. TrueNAS storage is not required for this integration.
 
 ## Backups and exports
 

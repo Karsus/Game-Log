@@ -1,5 +1,6 @@
 const { scrypt, randomBytes, timingSafeEqual, createHash } = require('node:crypto')
 const { promisify } = require('node:util')
+const { memberships } = require('./validation')
 const derive = promisify(scrypt)
 async function hashPassword(password) {
   const salt = randomBytes(16).toString('hex')
@@ -14,7 +15,7 @@ async function verifyPassword(password, hash) {
   return actual.length === key.length && timingSafeEqual(actual, key)
 }
 const digest = value => createHash('sha256').update(value).digest('hex')
-const safeUser = user => ({ _id: String(user._id), name: user.name, email: user.email, preferences: user.preferences })
+const safeUser = user => ({ _id: String(user._id), name: user.name, email: user.email, preferences: user.preferences, memberships: memberships.parse(user.memberships?.toObject?.() ?? user.memberships ?? {}) })
 const asyncRoute = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 function httpError(status, message) { return Object.assign(new Error(message), { status }) }
 function reconcileHunt(value, patch = {}) {

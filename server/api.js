@@ -2,7 +2,9 @@ const express = require('express')
 const { randomUUID } = require('node:crypto')
 const v = require('./domain/validation')
 const { asyncRoute: route, httpError, safeUser, reconcileHunt } = require('./domain/security')
-function createApi({ models: m, metadata }) {
+const { saveHuntWithBoard } = require('./domain/hunt-persistence')
+const { IMAGE_LIMITS } = require('./images')
+function createApi({ models: m, metadata, images }) {
   const router = express.Router()
   const userFilter = req => ({ userId: req.session.userId })
   async function owned(Model, id, req) {
@@ -19,6 +21,13 @@ function createApi({ models: m, metadata }) {
     if (value.gameId) await owned(m.LibraryGame, value.gameId, req)
     for (const id of new Set([...(value.wishlistPlatforms || []), ...(value.releases || []).map(r => r.platformId)])) await checkPlatform(id, req)
   }
+  function saveOnBoard(save, gameId, req) {
+    return saveHuntWithBoard({
+      connection: m.Hunt.db,
+      save,
+      enableBoard: session => m.LibraryGame.updateOne({ _id: gameId, ...userFilter(req) }, { $set: { showOnBoard: true } }, { session }),
+    })
+  }
   router.get('/bootstrap', route(async (req, res) => {
     const [user, platforms, games, copies, hardware, hunts] = await Promise.all([
       m.Account.findById(req.session.userId).lean(), m.PlatformRecord.find({ $or: [{ userId: null }, userFilter(req)] }).sort({ name: 1 }).lean(),
@@ -26,7 +35,7 @@ function createApi({ models: m, metadata }) {
       m.HardwareUnit.find(userFilter(req)).lean(), m.Hunt.find(userFilter(req)).lean(),
     ])
     if (!user) throw httpError(401, 'Please sign in again')
-    res.json({ user: safeUser(user), platforms, games, copies, hardware, hunts, metadataAvailable: metadata.configured })
+    res.json({ user: safeUser(user), platforms, games, copies, hardware, hunts, metadataAvailable: metadata.configured, imageUploads: { available: images.configured, ...IMAGE_LIMITS } })
   }))
   router.get('/metadata/games', route(async (req, res) => {
     const query = v.z.string().trim().min(2).max(100).parse(req.query.q)
@@ -35,6 +44,12 @@ function createApi({ models: m, metadata }) {
   router.put('/preferences', route(async (req, res) => {
     const value = v.preferences.parse(req.body)
     const user = await m.Account.findByIdAndUpdate(req.session.userId, { $set: { preferences: value } }, { new: true })
+    res.json(safeUser(user))
+  }))
+  router.put('/memberships', route(async (req, res) => {
+    const value = v.membershipUpdate.parse(req.body)
+    const user = await m.Account.findByIdAndUpdate(req.session.userId, { $set: { memberships: value } }, { new: true, runValidators: true })
+    if (!user) throw httpError(401, 'Please sign in again')
     res.json(safeUser(user))
   }))
   router.post('/platforms', route(async (req, res) => {
@@ -49,11 +64,10 @@ function createApi({ models: m, metadata }) {
         value = reconcileHunt(value, req.body)
         const enableBoard = v.z.boolean().optional().parse(req.body.enableBoard)
         if (enableBoard) {
-          let created
-          await Model.db.transaction(async session => {
-            ;[created] = await Model.create([{ ...value, ...userFilter(req) }], { session })
-            await m.LibraryGame.updateOne({ _id: value.gameId, ...userFilter(req) }, { $set: { showOnBoard: true } }, { session })
-          })
+          const created = await saveOnBoard(async session => {
+            const [hunt] = await Model.create([{ ...value, ...userFilter(req) }], { session })
+            return hunt
+          }, value.gameId, req)
           return res.status(201).json(created)
         }
       }
@@ -68,10 +82,7 @@ function createApi({ models: m, metadata }) {
       await validateReferences(value, req)
       doc.set(value)
       if (path === 'hunts' && v.z.boolean().optional().parse(req.body.enableBoard)) {
-        await Model.db.transaction(async session => {
-          await doc.save({ session })
-          await m.LibraryGame.updateOne({ _id: value.gameId, ...userFilter(req) }, { $set: { showOnBoard: true } }, { session })
-        })
+        await saveOnBoard(session => doc.save({ session }), value.gameId, req)
       } else await doc.save()
       res.json(doc)
     }))

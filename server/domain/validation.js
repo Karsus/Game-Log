@@ -1,5 +1,6 @@
 const { z } = require('zod')
 const { SERVICES, STATUSES } = require('./constants')
+const { GAME_PASS_TIERS, PS_PLUS_TIERS, SUBSCRIPTION_SERVICES } = require('./memberships')
 const text = (max = 500) => z.string().trim().max(max)
 const name = text(200).min(1, 'A name is required')
 const id = z.string().min(1).max(100)
@@ -7,11 +8,27 @@ const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'Invalid record ID')
 const nullableNumber = (min, max) => z.number().finite().min(min).max(max).nullable().default(null)
 const url = text(2000).refine(v => !v || /^https?:\/\//i.test(v), 'Use an http or https URL').default('')
 const date = z.string().refine(v => !v || /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v)), 'Use YYYY-MM-DD').default('')
+const membershipDate = z.string().refine(value => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  return !isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}, 'Use a valid calendar date in YYYY-MM-DD format').nullable().default(null)
+const timeZone = text(100).min(1).refine(value => {
+  if (/^[+-]/.test(value)) return false
+  try { new Intl.DateTimeFormat('en', { timeZone: value }); return true } catch { return false }
+}, 'Choose a valid IANA time zone')
+const gamePassMembership = z.object({ tier: z.enum(['none', ...GAME_PASS_TIERS]).default('none'), activeUntil: membershipDate }).strict()
+const psPlusMembership = z.object({ tier: z.enum(['none', ...PS_PLUS_TIERS]).default('none'), activeUntil: membershipDate }).strict()
+const memberships = z.object({ timeZone: timeZone.nullable().default(null), gamePass: gamePassMembership.default({ tier: 'none', activeUntil: null }), psPlus: psPlusMembership.default({ tier: 'none', activeUntil: null }) }).strict()
+  .refine(value => value.timeZone !== null || [value.gamePass, value.psPlus].every(provider => provider.tier === 'none' && provider.activeUntil === null), { path: ['timeZone'], message: 'A saved time zone is required for membership tiers or expiry dates' })
+const membershipUpdate = z.object({ timeZone, gamePass: gamePassMembership, psPlus: psPlusMembership }).strict()
 const platform = z.object({ name, manufacturer: text(100).default('Other'), service: z.enum(SERVICES).default('none'), variants: z.array(text(100)).max(50).default([]) })
 const game = z.object({
   title: name, description: text(20000).default(''), cover: url,
   developer: text(500).default(''), publisher: text(500).default(''), genres: z.array(text(100)).max(30).default([]),
   releaseYear: nullableNumber(1950, 2200), releases: z.array(z.object({ platformId: id, date })).max(100).default([]),
+  subscriptions: z.array(z.object({ service: z.enum(SUBSCRIPTION_SERVICES) })).max(8)
+    .refine(entries => new Set(entries.map(entry => entry.service)).size === entries.length, 'Each subscription service can only be added once').default([]),
   igdbId: z.number().int().positive().nullable().default(null), sourceUrl: url,
   wishlist: z.boolean().default(false), wishlistPlatforms: z.array(id).max(100).default([]), showOnBoard: z.boolean().default(false),
   rating: nullableNumber(0, 10), notes: text(20000).default(''),
@@ -60,10 +77,10 @@ const notebook = z.object({
 })
 const filter = z.object({
   platforms: z.array(id).max(100).default([]), service: z.enum(['', ...SERVICES]).default(''),
-  ownership: z.enum(['all', 'owned', 'wishlist', 'unowned']).default('all'), status: z.enum(['', ...STATUSES]).default(''),
+  ownership: z.enum(['all', 'owned', 'wishlist', 'unowned', 'subscription', 'ps-plus', ...SUBSCRIPTION_SERVICES]).default('all'), status: z.enum(['', ...STATUSES]).default(''),
   difficulty: z.string().regex(/^(|unknown|10|[1-9])$/).default(''),
   format: z.enum(['', 'physical', 'digital']).default(''),
   sort: z.enum(['hours', 'status', 'added', 'title']).default('hours'), direction: z.enum(['asc', 'desc']).default('asc'),
 })
 const preferences = z.object({ theme: z.enum(['dark', 'light']).default('dark'), catalog: filter.nullable().default(null), hunts: filter.nullable().default(null) })
-module.exports = { z, objectId, platform, game, copy, hardware, hunt, notebook, preferences, filter }
+module.exports = { z, objectId, platform, game, copy, hardware, hunt, notebook, preferences, filter, memberships, membershipUpdate }

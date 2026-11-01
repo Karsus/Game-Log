@@ -2,11 +2,11 @@ const express = require('express')
 const { Types } = require('mongoose')
 const { randomUUID } = require('node:crypto')
 const v = require('./domain/validation')
-const { asyncRoute: route, httpError, reconcileHunt } = require('./domain/security')
+const { asyncRoute: route, httpError, reconcileHunt, safeUser } = require('./domain/security')
 const { PLATFORM_CATALOG } = require('./domain/constants')
 const { wholeDifficulty, wholeDifficultyFilter } = require('./domain/difficulty')
 const record = (schema, extra = {}) => schema.extend({ _id: v.z.string().min(1).max(100), createdAt: v.z.string().datetime().optional(), ...extra })
-const backupSchema = v.z.object({ version: v.z.literal(1), exportedAt: v.z.string().optional(), platforms: v.z.array(record(v.platform)).max(200), games: v.z.array(record(v.game)).max(5000), copies: v.z.array(record(v.copy)).max(10000), hardware: v.z.array(record(v.hardware)).max(5000), hunts: v.z.array(record(v.hunt, { notebook: v.notebook })).max(5000), preferences: v.preferences })
+const backupSchema = v.z.object({ version: v.z.literal(1), exportedAt: v.z.string().optional(), platforms: v.z.array(record(v.platform)).max(200), games: v.z.array(record(v.game)).max(5000), copies: v.z.array(record(v.copy)).max(10000), hardware: v.z.array(record(v.hardware)).max(5000), hunts: v.z.array(record(v.hunt, { notebook: v.notebook })).max(5000), preferences: v.preferences, memberships: v.memberships.optional() })
 function validateBackup(body) {
   // Older version-1 backups remain importable; only legacy difficulty is normalized.
   if (body && typeof body === 'object' && !Array.isArray(body)) {
@@ -32,9 +32,12 @@ function backupRouter(m) {
     const filter = { userId: req.session.userId }
     const [platforms, games, copies, hardware, hunts, account] = await Promise.all([m.PlatformRecord.find(filter).lean(), m.LibraryGame.find(filter).lean(), m.GameCopy.find(filter).lean(), m.HardwareUnit.find(filter).lean(), m.Hunt.find(filter).lean(), m.Account.findById(req.session.userId).lean()])
     const clean = entries => entries.map(({ userId, __v, updatedAt, ...value }) => value)
-    res.json({ version: 1, exportedAt: new Date().toISOString(), platforms: clean(platforms), games: clean(games), copies: clean(copies), hardware: clean(hardware), hunts: clean(hunts), preferences: account.preferences })
+    res.json({ version: 1, exportedAt: new Date().toISOString(), platforms: clean(platforms), games: clean(games), copies: clean(copies), hardware: clean(hardware), hunts: clean(hunts), preferences: account.preferences, memberships: safeUser(account).memberships })
   }))
-  router.post('/preview', route(async (req, res) => res.json({ counts: counts(validateBackup(req.body)), mode: 'add', message: 'Import creates new records in your account. Existing records are not changed.' })))
+  router.post('/preview', route(async (req, res) => {
+    const data = validateBackup(req.body), restoresMemberships = data.memberships !== undefined
+    res.json({ counts: counts(data), mode: 'add', restoresMemberships, ...(restoresMemberships ? { memberships: data.memberships } : {}), message: `Import creates new collection records and restores saved preferences. ${restoresMemberships ? 'Membership settings will also be restored from this backup.' : 'Your current membership settings will be preserved.'}` })
+  }))
   router.post('/import', route(async (req, res) => {
     const data = validateBackup(req.body), userId = req.session.userId
     const platforms = new Map(data.platforms.map(p => [p._id, `custom-${randomUUID()}`])), games = new Map(data.games.map(g => [g._id, new Types.ObjectId()]))
@@ -46,7 +49,7 @@ function backupRouter(m) {
       for (const [key, Model] of [['copies', m.GameCopy], ['hardware', m.HardwareUnit], ['hunts', m.Hunt]]) if (data[key].length) await Model.insertMany(data[key].map(r => ({ ...strip(r), userId, platformId: platformId(r.platformId), ...(r.gameId ? { gameId: games.get(r.gameId) } : {}), ...(key === 'hunts' ? { notebook: { ...r.notebook, revision: 0 } } : {}) })), { session })
       const preferences = { ...data.preferences }
       for (const key of ['catalog', 'hunts']) if (preferences[key]) preferences[key] = { ...preferences[key], platforms: preferences[key].platforms.map(platformId) }
-      await m.Account.updateOne({ _id: userId }, { $set: { preferences } }, { session })
+      await m.Account.updateOne({ _id: userId }, { $set: { preferences, ...(data.memberships !== undefined ? { memberships: data.memberships } : {}) } }, { session })
     })
     res.status(201).json({ counts: counts(data) })
   }))

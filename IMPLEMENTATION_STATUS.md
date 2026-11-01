@@ -1,5 +1,37 @@
 # Game Log implementation handoff
 
+## Current memberships and inactive access — November 1, 2026
+
+Implemented **Settings → My subscriptions** with explicit saves, optional inclusive Active through dates, saved account time zone initially taken from the browser, and inactive defaults. Game Pass now supports Essential (Core), Premium (Standard), PC, and Ultimate; Ultimate covers all four sources, Premium covers Essential and Premium, and PC remains independent. PS Plus Premium covers Extra and Basic; Extra covers Basic. Legacy generic Game Pass tags remain compatible and use any active Game Pass membership, with guidance to select a precise tier when known.
+
+Cards, tables, game details, hunt views, and CSV exports show each source's Active/Inactive status independently. Expiration refreshes at the account's midnight, on page load, and on return to the app, including daylight-saving boundaries. Ownership, source tags, wishlists, hunts, notebooks, and completion remain unchanged. Failed saves preserve drafts, and overlapping preference/membership responses cannot overwrite each other's client state.
+
+Memberships are separate account data, saved through authenticated, CSRF-protected `PUT /api/memberships` and included in session/bootstrap responses. JSON backups optionally restore memberships; preview and confirmation disclose replacement, while older backups preserve current settings. Active tiers or saved expiration dates require a valid account time zone in imports.
+
+The isolated demo on ports 4053/5043 verified inactive defaults, activation, tier downgrade coverage, expiration and reload persistence, independent sources, zero owned copies, and preserved 18/40 hunt progress. Desktop and 390px mobile checks passed with no page horizontal overflow. Screenshots: `.runtime/qa/memberships-desktop.png`, `.runtime/qa/memberships-mobile.png`, and `.runtime/qa/membership-hunt-desktop.png`. The QA demo and tab are stopped; existing app processes and personal data were preserved. Next review: open **Settings → My subscriptions**. Automatic provider syncing, catalog departures, billing, and renewal notifications remain out of scope.
+
+## Subscription access — November 1, 2026
+
+Implemented game-level subscription checkboxes for **Game Pass**, **PS Plus Basic**, **PS Plus Extra**, and **PS Plus Premium** in Add/Edit game. Per the user's final preference, subscription access has **no platform selector**. Basic marks claimed monthly games; Extra/Premium mark catalog access. Multiple selections are allowed. Subscription entries stay separate from owned copies, counts, wishlists, and progress; unchecking access preserves the game and hunts. Availability/expiration is manual.
+
+Library cards/tables, game details, hunt rows, CSV exports, and saved filters show the services and distinguish the PS Plus tiers. JSON backups preserve subscriptions and accept older version-1 backups. New PC hunts infer Xbox for Game Pass-only access or PlayStation for PS Plus-only access, retain the platform default when both provider families are selected, and preserve existing explicit hunt services.
+
+Validation: **121 tests pass** (43 server, 78 client), production build passes, and whitespace checks pass. Tests cover service validation, duplicate rejection, account isolation, backups, old records, zero subscription ownership counts, mixed owned/subscription games, filters, checkbox changes, and hunt defaults. An isolated demo on ports 4053/5043 verified saving without a platform, reload persistence, Basic/Premium labels, unchanged dashboard owned totals, and desktop/390px mobile layout. Screenshots: `.runtime/qa/subscription-choices-desktop.png` and `.runtime/qa/subscription-choices-mobile.png`. QA demo stopped; existing processes and personal database were preserved. Next review: refresh the running app and open a game's **Edit subscriptions** control.
+
+## Standalone MongoDB hunt fix — November 1, 2026
+
+Confirmed that the configured personal database uses standalone MongoDB. Hunt creation/editing with board visibility previously failed because these requests required transactions. They now retain transactional saves on replica sets and use a narrowly scoped standalone fallback: save the hunt, then enable board visibility. If visibility fails after saving, the form explicitly reports that progress was saved and asks for a reload. Network/commit errors never trigger the fallback.
+
+Validation: all **39 server tests pass**, including seven new regression tests covering the reported PlayStation form values, standalone edits and notebook preservation, duplicate protection, account isolation, partial-save errors, and rejection of unsafe retries. Tests use disposable databases. The personal database was inspected read-only; final retry in the user's running app remains to be confirmed. Backup imports and cascading game deletion still require a replica set.
+
+## Image upload addition — November 1, 2026
+
+Implemented URL / Upload controls for game covers and device photos, local previews/clear actions, deferred uploads on Save, and reuse of successful uploads after record-save failures. Added authenticated, CSRF-protected multipart uploads to Cloudinary with server-only credentials, account rate limits, JPEG/PNG/WebP content validation, animation/pixel/byte limits, orientation correction, metadata removal, and bounded WebP output. Existing URL records and version-1 backups remain compatible; hosted assets are retained when records/images are removed.
+
+Validation: all **78 tests pass** (32 server, 46 client), production build passes, and diff whitespace checks pass. Tests use disposable MongoDB and a mocked Cloudinary provider; no real upload was attempted. Browser checks verified cover/photo controls, preview/clear/cancel, missing-configuration guidance, and desktop/390px mobile layout. Preview: `.runtime/qa/image-upload-desktop.jpg`. Existing artwork changes and the personal `.env` were preserved. Dependency audit reports two moderate development-only advisories in existing `nodemon`/`minimatch`; no new image dependency is affected.
+
+Next image setup checkpoint: create/sign in to a Cloudinary Free account and stop at its Console for user review. Then guide credential location, local server configuration, restart, and one real upload/reload check **one step at a time**. Full reference and troubleshooting are in README's Image URLs and uploads section. Three optional server variables are documented in `enviroments/.env.example`. Real Cloudinary verification remains pending those credentials. Latest shared weekly allowance check: **7% used / 93% remaining**.
+
 ## Current state
 
 The approved implementation is complete locally as of October 29, 2026. It has not been deployed or committed.

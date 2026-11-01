@@ -1,9 +1,10 @@
 let csrf = ''
 export function setCsrf(value) { csrf = value || '' }
 export async function api(path, method = 'GET', body) {
+  const multipart = body instanceof FormData
   let response
   try {
-    response = await fetch(`/api${path}`, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(method !== 'GET' ? { 'X-CSRF-Token': csrf } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
+    response = await fetch(`/api${path}`, { method, credentials: 'same-origin', headers: { ...(!multipart ? { 'Content-Type': 'application/json' } : {}), ...(method !== 'GET' ? { 'X-CSRF-Token': csrf } : {}) }, ...(body !== undefined ? { body: multipart ? body : JSON.stringify(body) } : {}) })
   } catch { throw new Error('Could not reach Game Log. Your unsaved changes are still here.') }
   const data = await response.json().catch(() => ({ error: 'The server returned an unexpected response. Please try again.' }))
   if (!response.ok) throw Object.assign(new Error(data.error || 'Request failed'), { status: response.status })

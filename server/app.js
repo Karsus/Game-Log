@@ -12,7 +12,8 @@ const { createApi } = require('./api')
 const { backupRouter } = require('./backup')
 const { createMetadataService } = require('./metadata')
 const { migrateDifficulties } = require('./domain/difficulty')
-async function createApp({ connection, secret, env = process.env, metadata = createMetadataService(env) }) {
+const { createImageService, imageRouter } = require('./images')
+async function createApp({ connection, secret, env = process.env, metadata = createMetadataService(env), images = createImageService(env) }) {
   const app = express(), models = createModels(connection)
   await Promise.all(Object.values(models).map(m => m.init()))
   await migrateDifficulties(models)
@@ -20,7 +21,7 @@ async function createApp({ connection, secret, env = process.env, metadata = cre
   const production = env.NODE_ENV === 'production'
   app.disable('x-powered-by')
   if (env.TRUST_PROXY) app.set('trust proxy', Number(env.TRUST_PROXY))
-  app.use(helmet({ contentSecurityPolicy: { directives: { imgSrc: ["'self'", 'https:', 'data:'], styleSrc: ["'self'", "'unsafe-inline'"], scriptSrc: ["'self'"], connectSrc: ["'self'"] } }, crossOriginEmbedderPolicy: false, strictTransportSecurity: production ? undefined : false }))
+  app.use(helmet({ contentSecurityPolicy: { directives: { imgSrc: ["'self'", 'https:', 'data:', 'blob:'], styleSrc: ["'self'", "'unsafe-inline'"], scriptSrc: ["'self'"], connectSrc: ["'self'"] } }, crossOriginEmbedderPolicy: false, strictTransportSecurity: production ? undefined : false }))
   app.use(express.json({ limit: '10mb' }))
   const sessionStore = MongoStore.create({ client: connection.getClient(), dbName: connection.name, collectionName: 'sessions', stringify: false, ttl: 7 * 86400 })
   app.use(session({ name: 'gamelog.sid', secret, store: sessionStore, resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax', secure: production, maxAge: 7 * 86400000 } }))
@@ -36,7 +37,8 @@ async function createApp({ connection, secret, env = process.env, metadata = cre
   })
   const auth = authRouter({ models, env, sessionCollection: connection.collection('sessions') })
   app.use('/api/auth', auth.router); app.use('/api', auth.requireUser)
-  app.use('/api/backups', backupRouter(models)); app.use('/api', createApi({ models, metadata }))
+  app.use('/api/images', imageRouter(images))
+  app.use('/api/backups', backupRouter(models)); app.use('/api', createApi({ models, metadata, images }))
   app.use('/api', (req, res) => res.status(404).json({ error: 'API route not found' }))
   if (production) { const dist = path.join(__dirname, '..', 'client', 'dist'); app.use(express.static(dist)); app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html'))) }
   app.use((error, req, res, next) => {

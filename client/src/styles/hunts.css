@@ -29,8 +29,8 @@
 .hunt-title { display: block; flex: 1; min-width: 0; font-size: 12px; font-weight: 650; line-height: 1.45; padding-top: 5px; color: inherit; overflow-wrap: anywhere; }
 .hunt-row .icon-button { color: inherit; width: 30px; min-width: 30px; min-height: 30px; padding: 6px; border-radius: 4px; }
 .hunt-row .icon-button:hover { background: #ffffff26; }
-.hunt-row-platform { display: flex; justify-content: space-between; gap: 8px; color: var(--row-muted); font-size: 10px; line-height: 1.4; margin: 1px 0 9px; }
-.hunt-row-platform > span:last-child { flex-shrink: 0; }
+.hunt-row-platform { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; color: var(--row-muted); font-size: 10px; line-height: 1.4; margin: 1px 0 9px; }
+.hunt-row-platform > span { min-width: 0; overflow-wrap: anywhere; }
 .hunt-row-meta { display: flex; align-items: center; gap: 8px; font-size: 10px; flex-wrap: wrap; }
 .hunt-row .status { color: inherit; background: none; padding: 0; font-size: 10px; font-weight: 600; }
 .hunt-row .status i { background: currentColor; }
