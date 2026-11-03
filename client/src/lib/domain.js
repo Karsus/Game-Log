@@ -15,7 +15,7 @@ export const subscriptionLabels = game => [...new Set(gameSubscriptions(game).ma
 export function ownership(data, gameId, platformId) {
   return data.copies.some(c => c.gameId === gameId && (!platformId || c.platformId === platformId) && activeCopy(c))
 }
-export const accessLabel = (data, game, platformId, now = Date.now()) => [...(ownership(data, game._id, platformId) ? ['Owned'] : []), subscriptionAccessLabel(game, data.user?.memberships, now)].filter(Boolean).join(' · ') || 'Not owned'
+export const accessLabel = (data, game, platformId, now = Date.now(), options) => [...(ownership(data, game._id, platformId) ? ['Owned'] : []), subscriptionAccessLabel(game, data.user?.memberships, now, options)].filter(Boolean).join(' · ') || 'Not owned'
 export function matchesOwnership(owned, wished, filter, subscriptions = []) {
   return filter === 'all' || filter === 'owned' && owned || filter === 'wishlist' && wished || filter === 'unowned' && !owned || filter === 'subscription' && subscriptions.length > 0 || filter === 'game-pass' && subscriptions.some(subscription => ['game-pass', 'game-pass-essential', 'game-pass-premium', 'game-pass-pc', 'game-pass-ultimate'].includes(subscription.service)) || filter === 'ps-plus' && subscriptions.some(subscription => ['ps-plus-basic', 'ps-plus-extra', 'ps-plus-premium'].includes(subscription.service)) || Object.hasOwn(SUBSCRIPTION_LABELS, filter) && subscriptions.some(subscription => subscription.service === filter)
 }
@@ -64,10 +64,17 @@ export function itemDone(item, items) {
   if (children.length) return children.every(i => itemDone(i, items))
   return item.type === 'counter' ? item.current >= item.target : item.done
 }
+export const trophyDone = trophy => !!trophy.done
+export const trophyObjectiveDone = trophy => trophy.type === 'counter' ? (trophy.current ?? 0) >= (trophy.target ?? 1) : trophyDone(trophy)
 export function notebookProgress(notebook) {
   const parents = new Set(notebook.items.map(item => item.parentId).filter(Boolean))
   const leaves = notebook.items.filter(item => !parents.has(item.id))
-  return { total: leaves.length, done: leaves.filter(item => item.type === 'counter' ? item.current >= item.target : item.done).length }
+  const withTasks = new Set(notebook.items.map(item => item.trophyId))
+  const trophyObjectives = (notebook.trophies || []).filter(trophy => trophy.type === 'counter' || !withTasks.has(trophy.id))
+  return {
+    total: leaves.length + trophyObjectives.length,
+    done: leaves.filter(item => item.type === 'counter' ? item.current >= item.target : item.done).length + trophyObjectives.filter(trophyObjectiveDone).length,
+  }
 }
 export function parseFilters(search, defaults, scope) {
   const base = { ...DEFAULT_FILTERS, ...(scope === 'catalog' ? { sort: 'title' } : {}), ...defaults }

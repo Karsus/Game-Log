@@ -28,7 +28,7 @@ it('starts inactive with no memberships and initializes the draft time zone from
 it('saves the selected tiers and inclusive end date only after explicit save', async () => {
   render(<Memberships />)
   fireEvent.change(screen.getByLabelText('Game Pass tier'), { target: { value: 'game-pass-ultimate' } })
-  fireEvent.change(screen.getByLabelText('Game Pass active through'), { target: { value: '2026-11-01' } })
+  fireEvent.change(screen.getByLabelText('Game Pass active through'), { target: { value: '01/11/2026' } })
   fireEvent.change(screen.getByLabelText('PS Plus tier'), { target: { value: 'ps-plus-premium' } })
   expect(screen.getAllByText('Inactive')).toHaveLength(2)
   expect(context.saveMemberships).not.toHaveBeenCalled()
@@ -42,13 +42,32 @@ it('keeps failed drafts visible without promising active access', async () => {
   context.saveMemberships.mockRejectedValueOnce(new Error('Could not save memberships'))
   render(<Memberships />)
   fireEvent.change(screen.getByLabelText('Game Pass tier'), { target: { value: 'game-pass-pc' } })
-  fireEvent.change(screen.getByLabelText('Game Pass active through'), { target: { value: '2026-12-01' } })
+  fireEvent.change(screen.getByLabelText('Game Pass active through'), { target: { value: '01/12/2026' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save subscriptions' }))
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Could not save memberships'))
   expect(screen.getByLabelText('Game Pass tier').value).toBe('game-pass-pc')
-  expect(screen.getByLabelText('Game Pass active through').value).toBe('2026-12-01')
+  expect(screen.getByLabelText('Game Pass active through').value).toBe('01/12/2026')
   expect(within(screen.getByRole('region', { name: 'Game Pass membership' })).getByText('Inactive')).toBeTruthy()
   expect(context.notify).not.toHaveBeenCalled()
+})
+
+it('blocks invalid day-first dates without saving an old date, and resets the draft correctly', async () => {
+  context.user.memberships = memberships({ timeZone: 'America/Mexico_City', psPlus: { tier: 'ps-plus-premium', activeUntil: '2027-04-08' } })
+  render(<Memberships />)
+  const date = screen.getByLabelText('PS Plus active through')
+  expect(date.value).toBe('08/04/2027')
+  fireEvent.change(date, { target: { value: '31/02/2027' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscriptions' }))
+  expect(date.checkValidity()).toBe(false)
+  expect(date.value).toBe('31/02/2027')
+  expect(context.saveMemberships).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Reset changes' }))
+  expect(date.value).toBe('08/04/2027')
+  expect(date.checkValidity()).toBe(true)
+  fireEvent.change(date, { target: { value: '29/02/2028' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscriptions' }))
+  await waitFor(() => expect(context.saveMemberships).toHaveBeenCalledOnce())
+  expect(context.saveMemberships.mock.calls[0][0].psPlus.activeUntil).toBe('2028-02-29')
 })
 
 it('converts blank end dates to null and uses the stored time zone until explicitly changed', async () => {
@@ -74,7 +93,7 @@ it('refreshes clean drafts from saved changes and preserves drafts that have uns
   expect(within(screen.getByRole('region', { name: 'Game Pass membership' })).getByText('Expired')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Reset changes' }))
   expect(screen.getByLabelText('Game Pass tier').value).toBe('game-pass-ultimate')
-  expect(screen.getByLabelText('Game Pass active through').value).toBe('2026-10-31')
+  expect(screen.getByLabelText('Game Pass active through').value).toBe('31/10/2026')
 })
 
 it('clears an irrelevant end date when a membership is set to None', async () => {

@@ -1,0 +1,15 @@
+[
+  { "id": "steam", "label": "Steam", "aliases": ["Steam Store"] },
+  { "id": "xbox-store", "label": "Xbox Store", "aliases": ["Xbox", "Xbox Marketplace", "Xbox Games Store"] },
+  { "id": "gog", "label": "GOG", "aliases": ["GOG.com", "GOG Store", "Good Old Games"] },
+  { "id": "epic-store", "label": "Epic Store", "aliases": ["Epic", "Epic Games", "Epic Games Store", "EGS"] },
+  { "id": "playstation-store", "label": "PlayStation Store", "aliases": ["PlayStation", "PS Store", "PSN", "PlayStation Network"] },
+  { "id": "nintendo-eshop", "label": "Nintendo eShop", "aliases": ["eShop", "Nintendo Store", "Nintendo"] },
+  { "id": "microsoft-store", "label": "Microsoft Store", "aliases": ["Windows Store"] },
+  { "id": "ea-app", "label": "EA app", "aliases": ["EA", "EA Store", "Origin"] },
+  { "id": "ubisoft-connect", "label": "Ubisoft Connect", "aliases": ["Ubisoft", "Ubisoft Store", "Uplay"] },
+  { "id": "battle-net", "label": "Battle.net", "aliases": ["Battle net", "Blizzard", "Blizzard Store"] },
+  { "id": "itch-io", "label": "itch.io", "aliases": ["itch io", "Itch"] },
+  { "id": "amazon-games", "label": "Amazon Games", "aliases": ["Amazon Games app"] },
+  { "id": "other", "label": "Other", "aliases": [] }
+]

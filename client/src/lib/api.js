@@ -7,7 +7,7 @@ export async function api(path, method = 'GET', body) {
     response = await fetch(`/api${path}`, { method, credentials: 'same-origin', headers: { ...(!multipart ? { 'Content-Type': 'application/json' } : {}), ...(method !== 'GET' ? { 'X-CSRF-Token': csrf } : {}) }, ...(body !== undefined ? { body: multipart ? body : JSON.stringify(body) } : {}) })
   } catch { throw new Error('Could not reach Game Log. Your unsaved changes are still here.') }
   const data = await response.json().catch(() => ({ error: 'The server returned an unexpected response. Please try again.' }))
-  if (!response.ok) throw Object.assign(new Error(data.error || 'Request failed'), { status: response.status })
+  if (!response.ok) throw Object.assign(new Error(data.error || 'Request failed'), { status: response.status, code: data.code, existingGameId: data.existingGameId, existingGameTitle: data.existingGameTitle })
   if (data.csrf) setCsrf(data.csrf)
   return data
 }

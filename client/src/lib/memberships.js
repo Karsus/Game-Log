@@ -69,4 +69,4 @@ export function subscriptionAccess(game, memberships, now = Date.now()) {
     return { service, label: SUBSCRIPTION_LABELS[service], active }
   })
 }
-export const subscriptionAccessLabel = (game, memberships, now = Date.now()) => subscriptionAccess(game, memberships, now).map(({ label, active }) => `${label} · ${active ? 'Active' : 'Inactive'}`).join('; ')
+export const subscriptionAccessLabel = (game, memberships, now = Date.now(), { activeOnly = false } = {}) => subscriptionAccess(game, memberships, now).filter(source => !activeOnly || source.active).map(({ label, active }) => `${label} · ${active ? 'Active' : 'Inactive'}`).join('; ')

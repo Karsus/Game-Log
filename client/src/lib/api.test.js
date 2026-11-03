@@ -21,3 +21,8 @@ it('surfaces upload server and network failures', async () => {
   fetch.mockRejectedValueOnce(new Error('Offline'))
   await expect(api('/images', 'POST', new FormData())).rejects.toThrow('Your unsaved changes are still here.')
 })
+
+it('preserves structured duplicate game errors for links from stale forms', async () => {
+  fetch.mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ error: 'Pragmata is already in your library.', code: 'DUPLICATE_GAME', existingGameId: 'game-1', existingGameTitle: 'Pragmata' }) })
+  await expect(api('/games', 'POST', { title: 'Pragmata' })).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_GAME', existingGameId: 'game-1', existingGameTitle: 'Pragmata', message: 'Pragmata is already in your library.' })
+})

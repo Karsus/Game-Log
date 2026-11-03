@@ -3,10 +3,17 @@ const { randomUUID } = require('node:crypto')
 const v = require('./domain/validation')
 const { asyncRoute: route, httpError, safeUser, reconcileHunt } = require('./domain/security')
 const { saveHuntWithBoard } = require('./domain/hunt-persistence')
+const { deleteGameWithRelations } = require('./domain/game-deletion')
+const { normalizeNotebook } = require('./domain/notebook')
+const { assertGameAvailable, gameIdentityKeys, gameIdentityChanged, gameResponse } = require('./domain/game-identity')
 const { IMAGE_LIMITS } = require('./images')
 function createApi({ models: m, metadata, images }) {
   const router = express.Router()
   const userFilter = req => ({ userId: req.session.userId })
+  function huntResponse(record) {
+    const value = record.toObject ? record.toObject() : record
+    return { ...value, notebook: normalizeNotebook(value.notebook) }
+  }
   async function owned(Model, id, req) {
     v.objectId.parse(id)
     const value = await Model.findOne({ _id: id, ...userFilter(req) })
@@ -35,7 +42,7 @@ function createApi({ models: m, metadata, images }) {
       m.HardwareUnit.find(userFilter(req)).lean(), m.Hunt.find(userFilter(req)).lean(),
     ])
     if (!user) throw httpError(401, 'Please sign in again')
-    res.json({ user: safeUser(user), platforms, games, copies, hardware, hunts, metadataAvailable: metadata.configured, imageUploads: { available: images.configured, ...IMAGE_LIMITS } })
+    res.json({ user: safeUser(user), platforms, games: games.map(gameResponse), copies, hardware, hunts: hunts.map(huntResponse), metadataAvailable: metadata.configured, imageUploads: { available: images.configured, ...IMAGE_LIMITS } })
   }))
   router.get('/metadata/games', route(async (req, res) => {
     const query = v.z.string().trim().min(2).max(100).parse(req.query.q)
@@ -60,6 +67,10 @@ function createApi({ models: m, metadata, images }) {
     router.post(`/${path}`, route(async (req, res) => {
       let value = schema.parse(req.body)
       await validateReferences(value, req)
+      if (path === 'games') {
+        await assertGameAvailable(Model, req.session.userId, value)
+        value = { ...value, ...gameIdentityKeys(value) }
+      }
       if (path === 'hunts') {
         value = reconcileHunt(value, req.body)
         const enableBoard = v.z.boolean().optional().parse(req.body.enableBoard)
@@ -68,10 +79,11 @@ function createApi({ models: m, metadata, images }) {
             const [hunt] = await Model.create([{ ...value, ...userFilter(req) }], { session })
             return hunt
           }, value.gameId, req)
-          return res.status(201).json(created)
+          return res.status(201).json(huntResponse(created))
         }
       }
-      res.status(201).json(await Model.create({ ...value, ...userFilter(req) }))
+      const created = await Model.create({ ...value, ...userFilter(req) })
+      res.status(201).json(path === 'hunts' ? huntResponse(created) : path === 'games' ? gameResponse(created) : created)
     }))
     router.patch(`/${path}/:id`, route(async (req, res) => {
       const doc = await owned(Model, req.params.id, req)
@@ -80,20 +92,22 @@ function createApi({ models: m, metadata, images }) {
       let value = schema.parse({ ...existing, ...patch, ...(path === 'hunts' ? { completion: { ...existing.completion, ...patch.completion } } : {}) })
       if (path === 'hunts') value = reconcileHunt(value, patch)
       await validateReferences(value, req)
+      const changedGameIdentity = path === 'games' && gameIdentityChanged(existing, value)
+      if (changedGameIdentity) {
+        await assertGameAvailable(Model, req.session.userId, value, doc._id)
+        value = { ...value, ...gameIdentityKeys(value) }
+      }
       doc.set(value)
+      if (changedGameIdentity && value.igdbIdentity === undefined) doc.markModified('igdbIdentity')
       if (path === 'hunts' && v.z.boolean().optional().parse(req.body.enableBoard)) {
         await saveOnBoard(session => doc.save({ session }), value.gameId, req)
       } else await doc.save()
-      res.json(doc)
+      res.json(path === 'hunts' ? huntResponse(doc) : path === 'games' ? gameResponse(doc) : doc)
     }))
     router.delete(`/${path}/:id`, route(async (req, res) => {
       const doc = await owned(Model, req.params.id, req)
       if (path === 'games') {
-        await Model.db.transaction(async session => {
-          await m.GameCopy.deleteMany({ gameId: doc._id, ...userFilter(req) }, { session })
-          await m.Hunt.deleteMany({ gameId: doc._id, ...userFilter(req) }, { session })
-          await Model.deleteOne({ _id: doc._id, ...userFilter(req) }, { session })
-        })
+        await deleteGameWithRelations({ models: m, userId: req.session.userId, gameId: doc._id })
       } else await doc.deleteOne()
       res.json({ ok: true })
     }))
@@ -103,19 +117,20 @@ function createApi({ models: m, metadata, images }) {
     await owned(m.Hunt, req.params.id, req)
     const doc = await m.Hunt.findOneAndUpdate({ _id: req.params.id, ...userFilter(req), 'notebook.revision': value.revision }, { $set: { notebook: { ...value, revision: value.revision + 1 } }, $inc: { __v: 1 } }, { new: true })
     if (!doc) throw httpError(409, 'This notebook changed in another window. Reload the latest version before saving again.')
-    res.json(doc)
+    res.json(huntResponse(doc))
   }))
   router.post('/hunts/:id/copy-notebook', route(async (req, res) => {
     const source = await owned(m.Hunt, req.params.id, req)
     const value = v.z.object({ targetId: v.objectId, revision: v.z.number().int().nonnegative() }).parse(req.body)
     if (value.targetId === req.params.id) throw httpError(400, 'Choose a different hunt')
     const target = await owned(m.Hunt, value.targetId, req)
-    const notebook = structuredClone(source.notebook)
+    const notebook = v.notebook.parse(source.notebook)
+    notebook.trophies = notebook.trophies.map(trophy => ({ ...trophy, done: false, current: 0 }))
     notebook.items = notebook.items.map(i => ({ ...i, done: false, current: 0 }))
     notebook.revision = value.revision + 1
     const result = await m.Hunt.findOneAndUpdate({ _id: target._id, ...userFilter(req), 'notebook.revision': value.revision }, { $set: { notebook }, $inc: { __v: 1 } }, { new: true })
     if (!result) throw httpError(409, 'The destination notebook changed. Reload and try again.')
-    res.json(result)
+    res.json(huntResponse(result))
   }))
   return router
 }

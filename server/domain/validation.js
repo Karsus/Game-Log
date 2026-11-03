@@ -1,6 +1,8 @@
 const { z } = require('zod')
 const { SERVICES, STATUSES } = require('./constants')
 const { GAME_PASS_TIERS, PS_PLUS_TIERS, SUBSCRIPTION_SERVICES } = require('./memberships')
+const { normalizeNotebook } = require('./notebook')
+const { storefrontId } = require('./storefronts')
 const text = (max = 500) => z.string().trim().max(max)
 const name = text(200).min(1, 'A name is required')
 const id = z.string().min(1).max(100)
@@ -40,7 +42,10 @@ const acquisition = {
   lentTo: text(200).default(''), notes: text(10000).default(''),
 }
 const hardware = z.object({ platformId: id, nickname: name, model: text(100).default(''), color: text(100).default(''), storage: text(100).default(''), region: text(100).default(''), serial: text(200).default(''), image: url, ...acquisition })
-const copy = z.object({ gameId: objectId, platformId: id, format: z.enum(['physical', 'digital']), storefront: text(100).default(''), edition: text(200).default(''), region: text(100).default(''), packaging: z.enum(['unknown', 'complete', 'boxed', 'loose', 'sealed', 'not-applicable']).default('unknown'), ...acquisition })
+const storefront = text(100).refine(value => storefrontId(value) !== undefined, 'Choose a storefront from the list, or choose Other').transform(storefrontId).default('')
+const copy = z.object({ gameId: objectId, platformId: id, format: z.enum(['physical', 'digital']), storefront, storefrontOther: text(100).default(''), edition: text(200).default(''), region: text(100).default(''), packaging: z.enum(['unknown', 'complete', 'boxed', 'loose', 'sealed', 'not-applicable']).default('unknown'), ...acquisition })
+  .refine(value => value.storefront !== 'other' || !!value.storefrontOther, { path: ['storefrontOther'], message: 'Enter the store name for Other' })
+  .overwrite(value => ({ ...value, storefrontOther: value.storefront === 'other' ? value.storefrontOther : '' }))
 const completion = z.object({ platinum: z.boolean().default(false), base: z.boolean().default(false), all: z.boolean().default(false), manual: z.boolean().default(false), completedOn: date }).default({})
 const hunt = z.object({
   gameId: objectId, platformId: id, service: z.enum(SERVICES).default('none'), variant: text(100).default(''),
@@ -50,31 +55,67 @@ const hunt = z.object({
   earned: z.number().int().min(0).max(100000).default(0), total: z.number().int().min(0).max(100000).nullable().default(null),
   completion, notes: text(20000).default(''),
 })
-const notebook = z.object({
+const notebookTracking = {
+  sectionIds: z.array(id).max(200).default([]), mainSectionId: id.nullable().default(null),
+  type: z.enum(['checkbox', 'counter']).default('checkbox'), done: z.boolean().default(false),
+  current: z.number().int().nonnegative().max(100000).default(0), target: z.number().int().positive().max(100000).default(1),
+  url, missable: z.boolean().default(false),
+}
+const notebookV2 = z.object({
+  formatVersion: z.literal(2),
   revision: z.number().int().nonnegative(),
-  sections: z.array(z.object({ id, title: name })).min(1).max(200),
+  trophies: z.array(z.object({ id, title: name, description: text(10000).default(''), ...notebookTracking })).max(200),
+  sections: z.array(z.object({ id, title: name })).max(200),
   items: z.array(z.object({
-    id, sectionId: id, parentId: id.nullable().default(null), title: name, category: text(100).default('General'),
-    type: z.enum(['checkbox', 'counter']).default('checkbox'), done: z.boolean().default(false),
-    current: z.number().int().nonnegative().max(100000).default(0), target: z.number().int().positive().max(100000).default(1),
-    notes: text(10000).default(''), url, missable: z.boolean().default(false),
+    id, trophyId: id, parentId: id.nullable().default(null), title: name,
+    ...notebookTracking, inheritTrophySections: z.boolean().default(true), notes: text(10000).default(''),
   })).max(5000),
 }).superRefine((value, ctx) => {
-  const sections = new Set(value.sections.map(s => s.id)), items = new Map(value.items.map(i => [i.id, i]))
+  const trophies = new Map(value.trophies.map(trophy => [trophy.id, trophy])), sections = new Set(value.sections.map(section => section.id)), items = new Map(value.items.map(item => [item.id, item]))
   const issue = message => ctx.addIssue({ code: 'custom', message })
-  if (sections.size !== value.sections.length || items.size !== value.items.length) issue('IDs must be unique')
+  if (trophies.size !== value.trophies.length || sections.size !== value.sections.length || items.size !== value.items.length) issue('IDs must be unique within trophies, sections, and items')
+  for (const trophy of value.trophies) {
+    if (new Set(trophy.sectionIds).size !== trophy.sectionIds.length) issue('Trophy section links must be unique')
+    if (trophy.sectionIds.some(sectionId => !sections.has(sectionId))) issue('Linked trophy section does not exist')
+    if (trophy.current > trophy.target) issue('Trophy counter cannot exceed its target')
+    if (trophy.sectionIds.length ? !trophy.sectionIds.includes(trophy.mainSectionId) : trophy.mainSectionId !== null) issue('Trophy main section must be one of its linked sections, or empty when there are no links')
+  }
   for (const item of value.items) {
-    if (!sections.has(item.sectionId)) issue('Item section does not exist')
+    if (!trophies.has(item.trophyId)) issue('Item trophy does not exist')
+    if (new Set(item.sectionIds).size !== item.sectionIds.length) issue('Item section links must be unique')
+    if (item.sectionIds.some(sectionId => !sections.has(sectionId))) issue('Linked section does not exist')
     if (item.current > item.target) issue('Counter cannot exceed its target')
-    let cursor = item, seen = new Set([item.id])
-    while (cursor.parentId) {
-      const parent = items.get(cursor.parentId)
-      if (!parent || parent.sectionId !== item.sectionId) { issue('Parent must be in the same section'); break }
-      if (seen.has(parent.id)) { issue('Checklist hierarchy cannot contain cycles'); break }
-      seen.add(parent.id); cursor = parent
+    if (item.parentId) {
+      const parent = items.get(item.parentId)
+      if (!parent || parent.trophyId !== item.trophyId) issue('Parent must be in the same trophy')
     }
   }
+  const effective = new Map()
+  for (const item of value.items) {
+    let cursor = item
+    const branch = [], seen = new Set()
+    while (cursor && !effective.has(cursor.id)) {
+      if (seen.has(cursor.id)) { issue('Checklist hierarchy cannot contain cycles'); return }
+      seen.add(cursor.id); branch.push(cursor)
+      cursor = items.get(cursor.parentId)
+    }
+    let links = cursor ? effective.get(cursor.id) : new Set()
+    for (let index = branch.length - 1; index >= 0; index--) {
+      const entry = branch[index]
+      if (!entry.parentId && entry.inheritTrophySections) links = new Set(trophies.get(entry.trophyId)?.sectionIds || [])
+      links = new Set([...links, ...entry.sectionIds])
+      effective.set(entry.id, links)
+    }
+  }
+  for (const item of value.items) {
+    const links = effective.get(item.id)
+    if (links.size ? !links.has(item.mainSectionId) : item.mainSectionId !== null) issue('Main section must be one of the item’s direct or inherited sections, or empty when there are no links')
+  }
 })
+const notebook = z.preprocess((input, ctx) => {
+  try { return normalizeNotebook(input) }
+  catch (error) { ctx.addIssue({ code: 'custom', message: error.message }); return z.NEVER }
+}, notebookV2)
 const filter = z.object({
   platforms: z.array(id).max(100).default([]), service: z.enum(['', ...SERVICES]).default(''),
   ownership: z.enum(['all', 'owned', 'wishlist', 'unowned', 'subscription', 'ps-plus', ...SUBSCRIPTION_SERVICES]).default('all'), status: z.enum(['', ...STATUSES]).default(''),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupHunts, DEFAULT_FILTERS, catalogGames, parseFilters, notebookProgress, itemDone, ownership, activeCopy, gameSubscriptions, subscriptionLabels, accessLabel } from './domain'
+import { groupHunts, DEFAULT_FILTERS, catalogGames, parseFilters, notebookProgress, itemDone, trophyDone, trophyObjectiveDone, ownership, activeCopy, gameSubscriptions, subscriptionLabels, accessLabel } from './domain'
 import { csv } from './api'
 const games = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Hidden'].map((title, i) => ({ _id: `g${i}`, title, showOnBoard: i !== 5, wishlistPlatforms: i === 1 ? ['ps5'] : [], releases: [{ platformId: i === 2 ? 'ps4' : 'ps5' }], createdAt: `2026-01-0${i + 1}` }))
 const hunts = [
@@ -173,6 +173,8 @@ describe('subscription access', () => {
     const before = Date.parse('2026-11-01T23:59:59Z'), after = Date.parse('2026-11-02T00:00:00Z')
     expect(accessLabel(source, source.games[0], undefined, before)).toBe('Owned · Game Pass · Active; PS Plus Basic · Inactive')
     expect(accessLabel(source, source.games[0], undefined, after)).toBe('Owned · Game Pass · Inactive; PS Plus Basic · Inactive')
+    expect(accessLabel(source, source.games[0], undefined, before, { activeOnly: true })).toBe('Owned · Game Pass · Active')
+    expect(accessLabel(source, source.games[0], undefined, after, { activeOnly: true })).toBe('Owned')
     expect(ownership(source, 'g0')).toBe(true)
     expect(ownership(source, 'g1')).toBe(false)
     expect(catalogIds({ ownership: 'subscription' }, source)).toEqual(['g0', 'g1'])
@@ -191,6 +193,63 @@ describe('notebook and export', () => {
     const items = [{ id: 'p', done: false }, { id: 'a', parentId: 'p', done: true }, { id: 'b', parentId: 'p', type: 'counter', current: 2, target: 3 }]
     expect(notebookProgress({ items })).toEqual({ done: 1, total: 2 }); expect(itemDone(items[0], items)).toBe(false)
     items[2].current = 3; expect(itemDone(items[0], items)).toBe(true)
+  })
+  it.each(['checkbox', 'counter'])('keeps the %s trophy earned flag independent from nested task progress', type => {
+    const trophy = { id: 'trophy', type, target: 4, current: 0, done: true }
+    const items = [
+      { id: 'root', trophyId: 'trophy', parentId: null, done: false },
+      { id: 'a', trophyId: 'trophy', parentId: 'root', done: true },
+      { id: 'b', trophyId: 'trophy', parentId: 'root', type: 'counter', current: 2, target: 3 },
+      { id: 'second-root', trophyId: 'trophy', parentId: null, done: true },
+      { id: 'unrelated', trophyId: 'other', parentId: null, done: false },
+    ]
+    expect(trophyDone(trophy, items)).toBe(true)
+    items[2].current = 3
+    expect(trophyDone({ ...trophy, current: 4, done: false }, items)).toBe(false)
+    items[3].done = false
+    expect(trophyDone(trophy, items)).toBe(true)
+    expect(trophyDone(trophy, [])).toBe(true)
+    expect(trophyDone({ ...trophy, done: false }, [])).toBe(false)
+    expect(trophyDone({ id: 'old-checkbox', done: true })).toBe(true)
+  })
+  it('tracks counter objectives independently from the trophy earned flag and checkbox objectives manually', () => {
+    const trophy = { id: 'counter', type: 'counter', current: 1, target: 4, done: true }
+    expect(trophyDone(trophy)).toBe(true)
+    expect(trophyObjectiveDone(trophy)).toBe(false)
+    const completed = { ...trophy, current: 4, done: false }
+    expect(trophyDone(completed)).toBe(false)
+    expect(trophyObjectiveDone(completed)).toBe(true)
+    expect(trophyObjectiveDone({ id: 'default-counter', type: 'counter' })).toBe(false)
+    expect(trophyObjectiveDone({ id: 'checkbox', type: 'checkbox', current: 0, target: 1, done: true })).toBe(true)
+    expect(trophyObjectiveDone({ id: 'checkbox', type: 'checkbox', current: 1, target: 1, done: false })).toBe(false)
+  })
+  it('counts standalone trophies and trophy counters alongside task leaves without counting checkbox parents twice', () => {
+    const notebook = {
+      trophies: [
+        { id: 'parent', type: 'checkbox', done: false, sectionIds: ['one', 'two'] },
+        { id: 'standalone', done: true, sectionIds: ['one', 'two'] },
+        { id: 'counter-parent', type: 'counter', current: 1, target: 2 },
+        { id: 'counter-alone', type: 'counter', current: 3, target: 3 },
+        { id: 'empty', done: false },
+      ],
+      items: [
+        { id: 'root', trophyId: 'parent', done: false },
+        { id: 'a', trophyId: 'parent', parentId: 'root', done: true },
+        { id: 'b', trophyId: 'parent', parentId: 'root', type: 'counter', current: 2, target: 3 },
+        { id: 'counter-child', trophyId: 'counter-parent', done: true },
+      ],
+    }
+    expect(notebookProgress(notebook)).toEqual({ done: 4, total: 7 })
+    notebook.trophies[0].done = true
+    notebook.trophies[2].done = true
+    notebook.trophies[3].done = true
+    expect(notebookProgress(notebook)).toEqual({ done: 4, total: 7 })
+    notebook.items[2].current = 3
+    notebook.trophies[2].current = 2
+    notebook.trophies[2].done = false
+    expect(notebookProgress(notebook)).toEqual({ done: 6, total: 7 })
+    expect(trophyDone(notebook.trophies[2])).toBe(false)
+    expect(notebookProgress({ items: [], trophies: [] })).toEqual({ done: 0, total: 0 })
   })
   it('quotes CSV cells and neutralizes spreadsheet formulas', () => expect(csv([['=SUM(1,2)', 'A "quote"', null]])).toBe('"\'=SUM(1,2)","A ""quote""",""'))
 })

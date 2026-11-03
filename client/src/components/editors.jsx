@@ -3,8 +3,11 @@ import { Search, Plus, X } from 'lucide-react'
 import { useApp } from '../state'
 import { api } from '../lib/api'
 import { SERVICE_LABELS, SUBSCRIPTION_LABELS, platformName, wholeDifficulty } from '../lib/domain'
+import { STOREFRONT_OPTIONS, copyStorefrontFields } from '../lib/storefronts'
 import { FormModal, FormField, Field, Button, Cover, ChoiceGrid, ErrorMessage, statusOptions } from './ui'
 import ImageField, { useImageInput } from './ImageField'
+import DateInput from './DateInput'
+import { findDuplicateGame, gameIdentityChanged } from '../../../shared/game-identity.mjs'
 const services = Object.entries(SERVICE_LABELS).map(([value, label]) => ({ value, label }))
 const options = values => values.map(value => ({ value, label: value.charAt(0).toUpperCase() + value.slice(1).replaceAll('-', ' ') }))
 function useFields(initial) { const [values, setValues] = useState(initial); return { values, set: (key, value) => setValues(old => ({ ...old, [key]: value })), setValues } }
@@ -20,19 +23,35 @@ export function GameEditor({ game, onClose, wishlist = false }) {
   const { data, mutate } = useApp(), form = useFields({ title: '', description: '', cover: '', developer: '', publisher: '', genres: [], releaseYear: null, releases: [], igdbId: null, sourceUrl: '', wishlist, wishlistPlatforms: [], subscriptions: [], rating: null, notes: '', ...game })
   const cover = useImageInput(game?.cover || '', data.imageUploads)
   const [query, setQuery] = useState(''), [results, setResults] = useState([]), [searching, setSearching] = useState(false), [searchError, setSearchError] = useState(''), [searched, setSearched] = useState(false)
+  const [serverConflict, setServerConflict] = useState(null)
+  const checksIdentity = !game || gameIdentityChanged(game, form.values)
+  const localMatch = checksIdentity && findDuplicateGame(data.games || [], form.values, game?._id)
+  const savedConflict = serverConflict && !gameIdentityChanged(serverConflict.candidate, form.values) ? serverConflict : null
+  const conflict = localMatch ? { existingGameId: localMatch._id, message: `${localMatch.title} is already in your library. Add another owned copy or hunt to that game.` } : savedConflict
   async function search() { setSearching(true); setSearchError(''); try { setResults(await api(`/metadata/games?q=${encodeURIComponent(query)}`)); setSearched(true) } catch (e) { setSearchError(e.message) } finally { setSearching(false) } }
   function pick(result) { const { platforms, ...fields } = result; form.setValues(old => ({ ...old, ...fields })); cover.reset(fields.cover || ''); setResults([]); setSearched(false) }
+  async function save() {
+    // Guard the handler as well as the button before resolving a pending upload.
+    if (conflict) throw Object.assign(new Error(conflict.message), { code: 'DUPLICATE_GAME' })
+    try {
+      return await mutate(game ? `/games/${game._id}` : '/games', game ? 'PATCH' : 'POST', { ...form.values, cover: await cover.resolve() }, game ? 'Game updated' : 'Game added')
+    } catch (error) {
+      if (error.code === 'DUPLICATE_GAME') setServerConflict({ candidate: { title: form.values.title, igdbId: form.values.igdbId }, existingGameId: error.existingGameId, message: error.message })
+      throw error
+    }
+  }
   const selected = [...new Set(form.values.releases.map(r => r.platformId))]
-  return <FormModal title={game ? 'Edit game' : 'Add a game'} subtitle="One game, all your platforms. Track subscription access here; add owned copies and hunts after saving." onClose={onClose} onSubmit={async () => mutate(game ? `/games/${game._id}` : '/games', game ? 'PATCH' : 'POST', { ...form.values, cover: await cover.resolve() }, game ? 'Game updated' : 'Game added')} wide label={game ? 'Save game' : 'Add to library'}>
-    {!game && <div className="lookup"><Field label="Find game details"><div className="input-action"><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search IGDB, e.g. Gladius" onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (query.trim().length > 1) search() } }} /><Button type="button" onClick={search} busy={searching} disabled={query.trim().length < 2 || !data.metadataAvailable}><Search size={16} />Search</Button></div></Field>{!data.metadataAvailable && <small>Game lookup is not configured yet. All fields can be entered manually.</small>}<ErrorMessage>{searchError}</ErrorMessage>{results.length > 0 && <div className="lookup-results">{results.map(result => <button key={result.igdbId} type="button" onClick={() => pick(result)}><Cover game={result} small /><span><strong>{result.title}</strong><small>{result.releaseYear || 'Year unknown'} · {result.platforms.join(', ')}</small></span><Plus size={18} /></button>)}</div>}{searched && !results.length && <p className="muted">No games found. Try another name or enter details below.</p>}</div>}
+  return <FormModal title={game ? 'Edit game' : 'Add a game'} subtitle="One game, all your platforms. Track subscription access here; add owned copies and hunts after saving." onClose={onClose} onSubmit={save} submitDisabled={!!conflict} renderError={error => error.code === 'DUPLICATE_GAME' ? null : error.message} wide label={game ? 'Save game' : 'Add to library'}>
+    {!game && <div className="lookup"><Field label="Find game details"><div className="input-action"><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search IGDB, e.g. Gladius" onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (query.trim().length > 1) search() } }} /><Button type="button" onClick={search} busy={searching} disabled={query.trim().length < 2 || !data.metadataAvailable}><Search size={16} />Search</Button></div></Field>{!data.metadataAvailable && <small>Game lookup is not configured yet. All fields can be entered manually.</small>}<ErrorMessage>{searchError}</ErrorMessage>{results.length > 0 && <div className="lookup-results">{results.map(result => <button key={result.igdbId} type="button" onClick={() => pick(result)}><Cover game={result} small /><span><strong>{result.title}</strong><small>{result.releaseYear || 'Year unknown'} · {result.platforms.join(', ')}</small>{findDuplicateGame(data.games || [], result) && <small>Already in your library</small>}</span><Plus size={18} /></button>)}</div>}{searched && !results.length && <p className="muted">No games found. Try another name or enter details below.</p>}</div>}
     <FormField name="title" label="Game title" {...form} required maxLength={200} autoFocus={!!game} />
+    <ErrorMessage>{conflict && <>{conflict.message}{conflict.existingGameId && <> <a href={`/games/${conflict.existingGameId}`}>Open existing game</a></>}</>}</ErrorMessage>
     <SubscriptionFields form={form} />
     <div className="form-grid"><FormField name="releaseYear" label="Release year" type="number" min={1950} max={2200} {...form} /><ImageField label="Cover image" image={cover} /><Inputs form={form} specs={[
       ['developer', 'Developer'], ['publisher', 'Publisher'], ['rating', 'My rating / 10', 'number', { min: 0, max: 10, step: '0.5' }],
     ]} /><Field label="Genres"><input value={form.values.genres.join(', ')} onChange={e => form.set('genres', e.target.value.split(',').map(s => s.trim()))} placeholder="Role-playing, Strategy" /></Field></div>
     <FormField name="description" label="Description" type="textarea" {...form} />
     <Field label="Released on"><ChoiceGrid value={selected} options={data.platforms.map(p => ({ value: p._id, label: p.name }))} onChange={ids => form.set('releases', ids.map(platformId => form.values.releases.find(r => r.platformId === platformId) || { platformId, date: '' }))} /></Field>
-    {!!form.values.releases.length && <details className="form-details"><summary>Release dates by platform</summary><div className="form-grid">{form.values.releases.map((r, i) => <Field key={`${r.platformId}-${i}`} label={platformName(data, r.platformId)}><input type="date" value={r.date || ''} onChange={e => form.set('releases', form.values.releases.map((v, j) => j === i ? { ...v, date: e.target.value } : v))} /></Field>)}</div></details>}
+    {!!form.values.releases.length && <details className="form-details"><summary>Release dates by platform</summary><div className="form-grid">{form.values.releases.map((r, i) => <Field key={`${r.platformId}-${i}`} label={platformName(data, r.platformId)}><DateInput aria-label={`${platformName(data, r.platformId)} release date`} value={r.date || ''} onChange={e => form.set('releases', form.values.releases.map((v, j) => j === i ? { ...v, date: e.target.value } : v))} /></Field>)}</div></details>}
     <FormField name="wishlist" label="On my wishlist" type="checkbox" {...form} />
     <Field label="Wishlist specific platform versions" hint="You can wishlist another version of a game you already own."><ChoiceGrid value={form.values.wishlistPlatforms} options={data.platforms.map(p => ({ value: p._id, label: p.name }))} onChange={value => form.set('wishlistPlatforms', value)} /></Field>
     <FormField name="notes" label="My notes" type="textarea" {...form} />
@@ -44,10 +63,13 @@ function SubscriptionFields({ form }) {
   return <Field className="subscription-source-options" label="Subscription access" hint="Keep the sources this game came from, even when your membership ends. Manage current memberships and expiration dates in Settings. Choose a specific Game Pass tier when known; plain Game Pass does not identify a tier. Basic is for claimed PS Plus monthly games."><ChoiceGrid value={entries.map(s => s.service)} options={Object.entries(SUBSCRIPTION_LABELS).map(([value, label]) => ({ value, label }))} onChange={services => form.set('subscriptions', services.map(service => ({ service })))} /></Field>
 }
 export function CopyEditor({ game, copy, onClose }) {
-  const { mutate } = useApp(), form = useFields({ gameId: game._id, platformId: game.releases[0]?.platformId || '', format: 'physical', storefront: '', edition: '', region: '', packaging: 'unknown', ...acquisitionDefaults, ...copy })
-  return <FormModal title={copy ? 'Edit owned copy' : 'Add owned copy'} subtitle={game.title} onClose={onClose} onSubmit={() => mutate(copy ? `/copies/${copy._id}` : '/copies', copy ? 'PATCH' : 'POST', form.values, 'Copy saved')} wide>
-    <div className="form-grid"><PlatformField form={form} /><FormField name="format" label="Format" {...form} options={options(['physical', 'digital'])} /><Inputs form={form} specs={[
-      ['storefront', 'Store / storefront', 'text', { placeholder: 'Steam, Xbox Store, local shop…' }], ['edition', 'Edition'], ['region', 'Region'], ['packaging', 'Packaging', 'text', { options: options(['unknown', 'complete', 'boxed', 'loose', 'sealed', 'not-applicable']) }],
+  const { mutate } = useApp(), form = useFields({ gameId: game._id, platformId: game.releases[0]?.platformId || '', format: 'physical', edition: '', region: '', packaging: 'unknown', ...acquisitionDefaults, ...copy, ...copyStorefrontFields(copy) })
+  return <FormModal title={copy ? 'Edit owned copy' : 'Add owned copy'} subtitle={game.title} onClose={onClose} onSubmit={() => mutate(copy ? `/copies/${copy._id}` : '/copies', copy ? 'PATCH' : 'POST', { ...form.values, storefrontOther: form.values.storefront === 'other' ? form.values.storefrontOther.trim() : '' }, 'Copy saved')} wide>
+    <div className="form-grid"><PlatformField form={form} /><FormField name="format" label="Format" {...form} options={options(['physical', 'digital'])} />
+      <FormField name="storefront" label="Store / storefront" {...form} options={STOREFRONT_OPTIONS} />
+      {form.values.storefront === 'other' && <FormField name="storefrontOther" label="Store name" {...form} required maxLength={100} placeholder="Local shop or another store" />}
+      <Inputs form={form} specs={[
+      ['edition', 'Edition'], ['region', 'Region'], ['packaging', 'Packaging', 'text', { options: options(['unknown', 'complete', 'boxed', 'loose', 'sealed', 'not-applicable']) }],
     ]} /></div><AcquisitionFields form={form} />
   </FormModal>
 }

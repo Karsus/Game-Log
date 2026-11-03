@@ -2,7 +2,7 @@
 import React from 'react'
 import { beforeEach, afterEach, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
-import { GameEditor, HardwareEditor, HuntEditor } from './editors'
+import { CopyEditor, GameEditor, HardwareEditor, HuntEditor } from './editors'
 import { api } from '../lib/api'
 
 const context = vi.hoisted(() => ({ data: {}, mutate: vi.fn() }))
@@ -20,6 +20,31 @@ beforeEach(() => {
   HTMLDialogElement.prototype.close = function () { this.open = false }
 })
 afterEach(cleanup)
+
+it.each(['copy', 'hardware'])('edits %s acquisition dates day-first and saves the same calendar day as ISO', async kind => {
+  const close = vi.fn(), acquiredOn = '2027-04-08'
+  render(kind === 'copy'
+    ? <CopyEditor game={game} copy={{ _id: 'copy-1', platformId: 'ps5', acquiredOn }} onClose={close} />
+    : <HardwareEditor unit={{ ...unit, acquiredOn }} onClose={close} />)
+  const date = screen.getByLabelText('Acquired on')
+  expect(date.value).toBe('08/04/2027')
+  fireEvent.change(date, { target: { value: '07/04/2027' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await waitFor(() => expect(close).toHaveBeenCalledOnce())
+  expect(context.mutate.mock.calls[0][2].acquiredOn).toBe('2027-04-07')
+})
+
+it('formats game release dates day-first and retains ISO in the saved record', async () => {
+  const close = vi.fn()
+  render(<GameEditor game={{ ...game, releases: [{ platformId: 'ps5', date: '2027-04-08' }] }} onClose={close} />)
+  fireEvent.click(screen.getByText('Release dates by platform'))
+  const date = screen.getByLabelText('PlayStation 5 release date')
+  expect(date.value).toBe('08/04/2027')
+  fireEvent.change(date, { target: { value: '09/05/2027' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save game' }))
+  await waitFor(() => expect(close).toHaveBeenCalledOnce())
+  expect(context.mutate.mock.calls[0][2].releases).toEqual([{ platformId: 'ps5', date: '2027-05-09' }])
+})
 
 it.each(['game', 'hardware'])('saves existing and edited %s URLs in their original property', async kind => {
   const isGame = kind === 'game', close = vi.fn()

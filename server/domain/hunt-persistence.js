@@ -1,4 +1,5 @@
 const { httpError } = require('./security')
+const { isStandaloneTransactionError } = require('./mongo-transactions')
 
 async function saveHuntWithBoard({ connection, save, enableBoard }) {
   try {
@@ -10,7 +11,7 @@ async function saveHuntWithBoard({ connection, save, enableBoard }) {
   } catch (error) {
     // Only this rejection guarantees the transaction never wrote anything.
     // Retrying after a timeout or uncertain commit could create a second hunt.
-    if (error.name !== 'MongoServerError' || error.code !== 20 || error.message !== 'Transaction numbers are only allowed on a replica set member or mongos') throw error
+    if (!isStandaloneTransactionError(error)) throw error
   }
 
   // Standalone MongoDB cannot commit both records together. Keep saved progress

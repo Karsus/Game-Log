@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { X, Gamepad2, AlertCircle, LoaderCircle, Check, ChevronDown } from 'lucide-react'
 import { STATUS_LABELS, huntLabel } from '../lib/domain'
+import DateInput from './DateInput'
 export function Button({ children, variant = 'secondary', className = '', busy, ...props }) { return <button className={`button ${variant} ${className}`} {...props} disabled={props.disabled || busy}>{busy && <LoaderCircle className="spin" size={16} />}{children}</button> }
 export function Field({ label, hint, children, className = '' }) {
   const group = children?.type === ChoiceGrid
@@ -13,13 +14,13 @@ export function Modal({ title, subtitle, children, onClose, wide = false }) {
   useEffect(() => { const dialog = ref.current; dialog.showModal(); const cancel = e => { e.preventDefault(); close.current() }; dialog.addEventListener('cancel', cancel); return () => { dialog.removeEventListener('cancel', cancel); dialog.close() } }, [])
   return <dialog ref={ref} className={`modal ${wide ? 'wide' : ''}`} aria-labelledby="dialog-title"><div className="modal-heading"><div><h2 id="dialog-title">{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={20} /></button></div>{children}</dialog>
 }
-export function FormModal({ title, subtitle, onClose, onSubmit, children, label = 'Save changes', wide }) {
-  const [busy, setBusy] = useState(false), [error, setError] = useState('')
-  async function submit(event) { event.preventDefault(); setBusy(true); setError(''); try { await onSubmit(); onClose() } catch (e) { setError(e.message) } finally { setBusy(false) } }
+export function FormModal({ title, subtitle, onClose, onSubmit, children, label = 'Save changes', wide, submitDisabled = false, renderError = error => error.message }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState(null)
+  async function submit(event) { event.preventDefault(); if (busy || submitDisabled) return; setBusy(true); setError(null); try { await onSubmit(); onClose() } catch (e) { setError(e) } finally { setBusy(false) } }
   // Keep the dialog instance mounted during validation and saving.
   const close = useRef(onClose); close.current = onClose
   const stableClose = React.useCallback(() => { if (!busy) close.current() }, [busy])
-  return <Modal title={title} subtitle={subtitle} onClose={stableClose} wide={wide}><form onSubmit={submit}><fieldset disabled={busy} className="form-fields">{children}</fieldset><ErrorMessage>{error}</ErrorMessage><div className="modal-footer"><Button type="button" onClick={stableClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" busy={busy}>{label}</Button></div></form></Modal>
+  return <Modal title={title} subtitle={subtitle} onClose={stableClose} wide={wide}><form onSubmit={submit}><fieldset disabled={busy} className="form-fields">{children}</fieldset><ErrorMessage>{error && renderError(error)}</ErrorMessage><div className="modal-footer"><Button type="button" onClick={stableClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" busy={busy} disabled={submitDisabled}>{label}</Button></div></form></Modal>
 }
 export function Confirm({ title, children, onClose, onConfirm, label = 'Delete' }) { return <FormModal title={title} onClose={onClose} onSubmit={onConfirm} label={label}><p className="muted">{children}</p></FormModal> }
 export function Cover({ game, small = false }) {
@@ -36,6 +37,7 @@ export function ChoiceGrid({ options, value, onChange }) { return <div className
 export function PageHeading({ eyebrow, title, children, actions }) { return <header className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1>{children && <p>{children}</p>}</div><div className="heading-actions">{actions}</div></header> }
 export function FormField({ name, label, values, set, setValues: _setValues, type = 'text', options, ...props }) {
   if (type === 'checkbox') return <label className="check-label"><input type="checkbox" checked={!!values[name]} onChange={e => set(name, e.target.checked)} {...props} />{label}</label>
+  if (type === 'date') return <Field label={label}><DateInput aria-label={label} value={values[name] ?? ''} onChange={e => set(name, e.target.value)} {...props} /></Field>
   const attrs = { value: values[name] ?? '', onChange: e => set(name, type === 'number' ? e.target.value === '' ? null : Number(e.target.value) : e.target.value), ...props }
   return <Field label={label}>{options ? <select {...attrs}>{options.map(o => <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>)}</select> : type === 'textarea' ? <textarea rows={3} {...attrs} /> : <input type={type} {...attrs} />}</Field>
 }

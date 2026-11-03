@@ -8,6 +8,7 @@ const { createApp } = require('../app')
 const { migrateDifficulties } = require('../domain/difficulty')
 const { validateBackup } = require('../backup')
 const { membershipDefaults, SUBSCRIPTION_SERVICES } = require('../domain/memberships')
+const { emptyNotebook, normalizeNotebook } = require('../domain/notebook')
 let mongo, connection, app, store, models, alice, bob, game, hunt
 async function account(email) {
   const agent = request.agent(app)
@@ -221,10 +222,13 @@ test('subscription backups preserve game-level services and accept older records
   const state = (await destination.agent.get('/api/bootstrap').expect(200)).body
   assert.deepEqual(state.games[0].subscriptions, subscriptions)
   assert.equal(state.copies.length, 0)
-  await send(destination, 'post', '/api/backups/import', legacy).expect(201)
-  const legacyState = (await destination.agent.get('/api/bootstrap').expect(200)).body
-  assert.equal(legacyState.games.length, 2)
-  assert.ok(legacyState.games.some(g => g.subscriptions.length === 0))
+  await send(destination, 'post', '/api/backups/import', legacy).expect(409)
+  assert.equal((await destination.agent.get('/api/bootstrap').expect(200)).body.games.length, 1)
+  const legacyDestination = await account('legacy-subscription-import@example.com')
+  await send(legacyDestination, 'post', '/api/backups/import', legacy).expect(201)
+  const legacyState = (await legacyDestination.agent.get('/api/bootstrap').expect(200)).body
+  assert.equal(legacyState.games.length, 1)
+  assert.deepEqual(legacyState.games[0].subscriptions, [])
 })
 
 test('subscription filters save and restore for library and hunts', async () => {
@@ -311,11 +315,13 @@ test('backup membership previews distinguish explicit restoration from older bac
   const backup = (await owner.agent.get('/api/backups/export').expect(200)).body
   assert.deepEqual(backup.memberships, original)
   const legacy = structuredClone(backup); delete legacy.memberships
+  const legacyDestination = await account('membership-legacy-restore@example.com')
+  await send(legacyDestination, 'put', '/api/memberships', current).expect(200)
   assert.equal(validateBackup(legacy).memberships, undefined)
-  const oldPreview = (await send(destination, 'post', '/api/backups/preview', legacy).expect(200)).body
+  const oldPreview = (await send(legacyDestination, 'post', '/api/backups/preview', legacy).expect(200)).body
   assert.equal(oldPreview.restoresMemberships, false); assert.equal(oldPreview.memberships, undefined)
-  await send(destination, 'post', '/api/backups/import', legacy).expect(201)
-  assert.deepEqual((await destination.agent.get('/api/bootstrap').expect(200)).body.user.memberships, current)
+  await send(legacyDestination, 'post', '/api/backups/import', legacy).expect(201)
+  assert.deepEqual((await legacyDestination.agent.get('/api/bootstrap').expect(200)).body.user.memberships, current)
   const preview = (await send(destination, 'post', '/api/backups/preview', backup).expect(200)).body
   assert.equal(preview.restoresMemberships, true); assert.deepEqual(preview.memberships, original)
   assert.deepEqual((await destination.agent.get('/api/bootstrap').expect(200)).body.user.memberships, current)
@@ -374,4 +380,189 @@ test('failed backup membership restoration rolls back imported collection record
   const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
   assert.equal(state.games.length, 0)
   assert.deepEqual(state.user.memberships, membershipDefaults())
+})
+
+const linkedNotebook = () => ({
+  formatVersion: 2, revision: 0,
+  trophies: [{ id: 'flowers', title: 'Find the flowers', description: 'Collect every flower.\nFinish before leaving the garden.', done: true }, { id: 'gifts', title: 'Find the gifts', done: false }],
+  sections: [{ id: 'chapter1', title: 'Chapter 1' }, { id: 'route', title: 'Collectibles route' }],
+  items: [
+    { id: 'parent', trophyId: 'flowers', title: 'Search the garden', sectionIds: ['chapter1'], mainSectionId: 'chapter1' },
+    { id: 'flower', trophyId: 'flowers', parentId: 'parent', title: 'Blue flower', sectionIds: ['route'], mainSectionId: 'chapter1', done: false, notes: 'Behind the fountain', url: 'https://example.com/guide', missable: true },
+    { id: 'counter', trophyId: 'flowers', parentId: 'parent', title: 'Garden seeds', mainSectionId: 'chapter1', type: 'counter', target: 3, current: 2 },
+    { id: 'gift', trophyId: 'gifts', title: 'Wrapped gift', done: true },
+  ],
+})
+const trackableTrophyNotebook = () => {
+  const value = linkedNotebook()
+  Object.assign(value.trophies[0], { type: 'counter', current: 2, target: 5, sectionIds: ['route'], mainSectionId: 'route', missable: true, url: 'https://example.com/flower-trophy' })
+  value.items.push(
+    { id: 'inherited', trophyId: 'flowers', title: 'Inherited trophy section', mainSectionId: 'route' },
+    { id: 'inherited-child', trophyId: 'flowers', title: 'Inherited through parent', parentId: 'inherited', mainSectionId: 'route', inheritTrophySections: false },
+    { id: 'independent', trophyId: 'flowers', title: 'Independent section copy', inheritTrophySections: false, sectionIds: ['chapter1'], mainSectionId: 'chapter1', done: true },
+    { id: 'independent-child', trophyId: 'flowers', title: 'Independent counter', parentId: 'independent', mainSectionId: 'chapter1', type: 'counter', target: 4, current: 3 },
+  )
+  return value
+}
+async function notebookHunt(owner, title) {
+  const entry = (await send(owner, 'post', '/api/games', { title }).expect(201)).body
+  return (await send(owner, 'post', '/api/hunts', { gameId: entry._id, platformId: 'ps5', service: 'playstation' }).expect(201)).body
+}
+
+test('v2 notebooks persist manual trophies and inherited links independently with revision and ownership checks', async () => {
+  const owner = await account('notebook-v2@example.com'), record = await notebookHunt(owner, 'Linked notebook')
+  assert.deepEqual(record.notebook, emptyNotebook())
+  const input = linkedNotebook()
+  await send(bob, 'put', `/api/hunts/${record._id}/notebook`, input).expect(404)
+  const saved = (await send(owner, 'put', `/api/hunts/${record._id}/notebook`, input).expect(200)).body.notebook
+  assert.deepEqual(saved, { ...normalizeNotebook(input), revision: 1 })
+  assert.equal(saved.trophies[0].done, true)
+  assert.equal(saved.trophies[0].description, input.trophies[0].description)
+  assert.equal(saved.items[1].done, false)
+  assert.equal(saved.trophies[1].done, false)
+  assert.equal(saved.items[3].done, true)
+  await send(owner, 'put', `/api/hunts/${record._id}/notebook`, input).expect(409)
+  const trophyOnly = { ...saved, trophies: saved.trophies.map(trophy => ({ ...trophy, done: !trophy.done })) }
+  const changed = (await send(owner, 'put', `/api/hunts/${record._id}/notebook`, trophyOnly).expect(200)).body.notebook
+  assert.deepEqual(changed.items, saved.items)
+  assert.equal(changed.revision, 2)
+  const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(state.hunts[0].notebook, changed)
+})
+
+test('malformed v2 notebook writes are rejected without changing the saved notebook', async () => {
+  const owner = await account('notebook-invalid@example.com'), record = await notebookHunt(owner, 'Notebook validation')
+  for (const change of [
+    value => { value.formatVersion = 3 },
+    value => { value.items[0].sectionIds = ['missing'] },
+    value => { value.items[0].sectionIds = ['chapter1', 'chapter1'] },
+    value => { value.items[0].mainSectionId = 'route' },
+    value => { value.items[1].mainSectionId = null },
+    value => { value.items[1].parentId = 'gift' },
+    value => { value.items[0].parentId = 'flower' },
+  ]) {
+    const invalid = linkedNotebook(); change(invalid)
+    await send(owner, 'put', `/api/hunts/${record._id}/notebook`, invalid).expect(400)
+  }
+  assert.deepEqual((await models.Hunt.findById(record._id).lean()).notebook, emptyNotebook())
+})
+
+test('legacy notebooks normalize in reads, hunt edits, copies, exports, and saves without losing progress', async () => {
+  const owner = await account('notebook-legacy@example.com'), record = await notebookHunt(owner, 'Legacy notebook'), destination = await notebookHunt(owner, 'Legacy copy')
+  const legacy = { revision: 6, sections: [{ id: 'old', title: 'Keep this trophy title' }], items: [
+    { id: 'goal', sectionId: 'old', title: 'Collect them all', category: 'Delete this category', done: true, notes: 'Keep these notes' },
+    { id: 'leaf', sectionId: 'old', parentId: 'goal', title: 'Counter collectible', category: 'Also removed', type: 'counter', target: 4, current: 3, done: false, missable: true },
+  ] }
+  await models.Hunt.updateOne({ _id: record._id }, { $set: { notebook: legacy } })
+  const expected = normalizeNotebook(legacy)
+  const state = (await owner.agent.get('/api/bootstrap').expect(200)).body
+  assert.deepEqual(state.hunts.find(entry => entry._id === record._id).notebook, expected)
+  const edited = (await send(owner, 'patch', `/api/hunts/${record._id}`, { notes: 'Edit unrelated hunt details' }).expect(200)).body
+  assert.deepEqual(edited.notebook, expected)
+  assert.deepEqual((await models.Hunt.findById(record._id).lean()).notebook, legacy)
+  const backup = (await owner.agent.get('/api/backups/export').expect(200)).body
+  assert.deepEqual(backup.hunts.find(entry => entry._id === record._id).notebook, expected)
+  const copied = (await send(owner, 'post', `/api/hunts/${record._id}/copy-notebook`, { targetId: destination._id, revision: 0 }).expect(200)).body.notebook
+  assert.equal(copied.formatVersion, 2)
+  assert.equal(copied.trophies[0].done, false)
+  assert.equal(copied.items[1].current, 0)
+  assert.equal(copied.items[1].parentId, 'goal')
+  assert.equal(copied.items[1].trophyId, 'old')
+  assert.equal('category' in copied.items[1], false)
+  const saved = (await send(owner, 'put', `/api/hunts/${record._id}/notebook`, legacy).expect(200)).body.notebook
+  assert.deepEqual(saved, { ...expected, revision: 7 })
+  assert.deepEqual((await models.Hunt.findById(record._id).lean()).notebook, saved)
+})
+
+test('copying v2 notebooks resets destination trophy and task progress while preserving links and source state', async () => {
+  const owner = await account('notebook-copy-v2@example.com'), source = await notebookHunt(owner, 'Copy source'), target = await notebookHunt(owner, 'Copy destination')
+  const saved = (await send(owner, 'put', `/api/hunts/${source._id}/notebook`, linkedNotebook()).expect(200)).body.notebook
+  const copied = (await send(owner, 'post', `/api/hunts/${source._id}/copy-notebook`, { targetId: target._id, revision: 0 }).expect(200)).body.notebook
+  assert.deepEqual(copied, { ...saved, trophies: saved.trophies.map(trophy => ({ ...trophy, done: false, current: 0 })), items: saved.items.map(item => ({ ...item, done: false, current: 0 })) })
+  assert.deepEqual((await models.Hunt.findById(source._id).lean()).notebook, saved)
+  await send(owner, 'post', `/api/hunts/${source._id}/copy-notebook`, { targetId: target._id, revision: 0 }).expect(409)
+})
+
+test('trackable trophies persist counters, links, and independent branches and copy with reset progress', async () => {
+  const owner = await account('notebook-trophy-tracking@example.com'), source = await notebookHunt(owner, 'Trackable trophies'), target = await notebookHunt(owner, 'Trackable trophy copies')
+  const input = trackableTrophyNotebook(), before = structuredClone(input)
+  const saved = (await send(owner, 'put', `/api/hunts/${source._id}/notebook`, input).expect(200)).body.notebook
+  assert.deepEqual(saved, { ...normalizeNotebook(input), revision: 1 })
+  assert.deepEqual(input, before)
+  assert.deepEqual((await models.Hunt.findById(source._id).lean()).notebook, saved)
+  assert.deepEqual((await owner.agent.get('/api/bootstrap').expect(200)).body.hunts.find(entry => entry._id === source._id).notebook, saved)
+
+  for (const invalidate of [
+    value => { value.trophies[0].current = 6 },
+    value => { value.trophies[0].mainSectionId = 'chapter1' },
+    value => { value.trophies[0].sectionIds = ['missing']; value.trophies[0].mainSectionId = 'missing' },
+    value => { value.items.find(entry => entry.id === 'independent').mainSectionId = 'route' },
+    value => { value.items.find(entry => entry.id === 'independent-child').mainSectionId = 'route' },
+  ]) {
+    const invalid = structuredClone(saved)
+    invalidate(invalid)
+    await send(owner, 'put', `/api/hunts/${source._id}/notebook`, invalid).expect(400)
+  }
+  assert.deepEqual((await models.Hunt.findById(source._id).lean()).notebook, saved)
+
+  const copied = (await send(owner, 'post', `/api/hunts/${source._id}/copy-notebook`, { targetId: target._id, revision: 0 }).expect(200)).body.notebook
+  assert.deepEqual(copied, {
+    ...saved,
+    trophies: saved.trophies.map(trophy => ({ ...trophy, done: false, current: 0 })),
+    items: saved.items.map(entry => ({ ...entry, done: false, current: 0 })),
+  })
+  assert.deepEqual((await models.Hunt.findById(source._id).lean()).notebook, saved)
+})
+
+test('trackable trophy backups preserve progress and notebook-local references across ownership remapping', async () => {
+  const owner = await account('trophy-tracking-export@example.com'), destination = await account('trophy-tracking-import@example.com'), record = await notebookHunt(owner, 'Trophy backup')
+  const saved = (await send(owner, 'put', `/api/hunts/${record._id}/notebook`, trackableTrophyNotebook()).expect(200)).body.notebook
+  const backup = (await owner.agent.get('/api/backups/export').expect(200)).body
+  assert.deepEqual(backup.hunts[0].notebook, saved)
+  await send(destination, 'post', '/api/backups/preview', backup).expect(200)
+  await send(destination, 'post', '/api/backups/import', backup).expect(201)
+  const imported = (await destination.agent.get('/api/bootstrap').expect(200)).body.hunts[0]
+  assert.notEqual(imported._id, record._id)
+  assert.notEqual(imported.gameId, record.gameId)
+  assert.equal(imported.userId, destination.id)
+  assert.deepEqual(imported.notebook, { ...saved, revision: 0 })
+  const reexport = (await destination.agent.get('/api/backups/export').expect(200)).body
+  assert.deepEqual(reexport.hunts[0].notebook, imported.notebook)
+
+  const invalid = structuredClone(backup)
+  invalid.hunts[0].notebook.trophies[0].sectionIds = ['missing']
+  invalid.hunts[0].notebook.trophies[0].mainSectionId = 'missing'
+  await send(destination, 'post', '/api/backups/preview', invalid).expect(400)
+  await send(destination, 'post', '/api/backups/import', invalid).expect(400)
+  assert.equal((await destination.agent.get('/api/bootstrap').expect(200)).body.hunts.length, 1)
+})
+
+test('v2 and legacy notebook backups round trip with canonical fields, ownership remapping, and reference validation', async () => {
+  const owner = await account('notebook-backup-v2@example.com'), destination = await account('notebook-import-v2@example.com'), record = await notebookHunt(owner, 'Notebook backup')
+  const saved = (await send(owner, 'put', `/api/hunts/${record._id}/notebook`, linkedNotebook()).expect(200)).body.notebook
+  const backup = (await owner.agent.get('/api/backups/export').expect(200)).body
+  assert.equal(backup.version, 1)
+  assert.deepEqual(backup.hunts[0].notebook, saved)
+  await send(destination, 'post', '/api/backups/preview', backup).expect(200)
+  await send(destination, 'post', '/api/backups/import', backup).expect(201)
+  const imported = (await destination.agent.get('/api/bootstrap').expect(200)).body.hunts[0]
+  assert.notEqual(imported._id, record._id)
+  assert.equal(imported.userId, destination.id)
+  assert.deepEqual(imported.notebook, { ...saved, revision: 0 })
+
+  const invalid = structuredClone(backup)
+  invalid.hunts[0].notebook.items[0].mainSectionId = 'missing'
+  await send(destination, 'post', '/api/backups/preview', invalid).expect(400)
+  await send(destination, 'post', '/api/backups/import', invalid).expect(400)
+  assert.equal((await destination.agent.get('/api/bootstrap')).body.hunts.length, 1)
+
+  const legacy = structuredClone(backup)
+  legacy.hunts[0].notebook = { revision: 8, sections: [{ id: 'legacy-trophy', title: 'Legacy trophy' }], items: [{ id: 'legacy-item', sectionId: 'legacy-trophy', title: 'Keep this collectible', category: 'Discard only this field', done: true }] }
+  const original = structuredClone(legacy)
+  const legacyDestination = await account('notebook-import-legacy@example.com')
+  await send(legacyDestination, 'post', '/api/backups/preview', legacy).expect(200)
+  await send(legacyDestination, 'post', '/api/backups/import', legacy).expect(201)
+  const legacyImport = (await legacyDestination.agent.get('/api/bootstrap')).body.hunts.find(entry => entry.notebook.trophies[0]?.id === 'legacy-trophy')
+  assert.deepEqual(legacyImport.notebook, { ...normalizeNotebook(legacy.hunts[0].notebook), revision: 0 })
+  assert.deepEqual(legacy, original)
 })

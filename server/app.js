@@ -12,11 +12,14 @@ const { createApi } = require('./api')
 const { backupRouter } = require('./backup')
 const { createMetadataService } = require('./metadata')
 const { migrateDifficulties } = require('./domain/difficulty')
+const { migrateStorefronts } = require('./domain/storefronts')
+const { duplicateGameResponse, resolveGameDuplicateKey, isGameDuplicateKey } = require('./domain/game-identity')
 const { createImageService, imageRouter } = require('./images')
 async function createApp({ connection, secret, env = process.env, metadata = createMetadataService(env), images = createImageService(env) }) {
   const app = express(), models = createModels(connection)
   await Promise.all(Object.values(models).map(m => m.init()))
   await migrateDifficulties(models)
+  await migrateStorefronts(models)
   await models.PlatformRecord.bulkWrite(PLATFORM_CATALOG.map(p => ({ updateOne: { filter: { _id: p._id }, update: { $setOnInsert: p }, upsert: true } })))
   const production = env.NODE_ENV === 'production'
   app.disable('x-powered-by')
@@ -43,6 +46,8 @@ async function createApp({ connection, secret, env = process.env, metadata = cre
   if (production) { const dist = path.join(__dirname, '..', 'client', 'dist'); app.use(express.static(dist)); app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html'))) }
   app.use((error, req, res, next) => {
     if (error instanceof ZodError) return res.status(400).json({ error: error.issues.map(i => `${i.path.join('.') ? `${i.path.join('.')}: ` : ''}${i.message}`).slice(0, 5).join('; ') })
+    if (isGameDuplicateKey(error)) return resolveGameDuplicateKey(models.LibraryGame, req.session?.userId, error).then(conflict => res.status(409).json(duplicateGameResponse(conflict)), next)
+    if (error.code === 'DUPLICATE_GAME') return res.status(409).json(duplicateGameResponse(error))
     if (error.code === 11000) return res.status(409).json({ error: req.path.includes('auth') ? 'An account with that email already exists' : 'This hunt already exists. Use a different edition/list label for a separate trophy list.' })
     if (error.name === 'VersionError') return res.status(409).json({ error: 'This record changed in another window. Reload and try again.' })
     if (error.type === 'entity.too.large') return res.status(413).json({ error: 'This file is too large (maximum 10 MB)' })

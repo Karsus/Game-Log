@@ -1,5 +1,61 @@
 # Game Log implementation handoff
 
+## Game deletion and duplicate protection — November 2, 2026
+
+Game deletion now works on standalone MongoDB as well as replica sets. Replica sets retain transactional cascades; only the exact unsupported-transaction rejection enables ordered, session-free cleanup of copies, hunts/notebooks, then the game. Partial standalone failures explain that some related records may already be removed and ask for a reload/retry. Uncertain commits and unrelated failures never trigger a fallback.
+
+Add/Edit game and backup preview/import block duplicates within an account by IGDB ID or title after trimming, collapsing whitespace, and lowercasing. Punctuation and accents stay significant; platforms and release years do not distinguish duplicates. Forms show existing matches, block known conflicts before cover uploads, preserve drafts, and link to the saved game even when browser data is stale. Internal partial unique identity indexes protect concurrent writes; legacy duplicates are not backfilled, merged, or deleted, and still accept edits that leave their identity unchanged. Internal keys stay out of responses and exports. Backup conflicts reject the entire import, including settings changes; imports still require a replica set.
+
+Validation: **441 tests pass (128 server, 313 client)**, production build and whitespace checks pass. Coverage includes real DELETE requests on both database topologies, empty games, rollback/retry, account isolation, concurrent create/edit/import conflicts, startup with legacy duplicates, private identity fields, stale form errors, and backup compatibility. Server tests use disposable databases with process-scoped TEMP/TMP set to `.runtime/test-temp`; sandbox localhost restrictions require running those tests outside the sandbox. The existing development API automatically restarted and `/api/health` reports healthy. Next review: reload Game Log and retry deleting Pragmata; no personal game was deleted during verification.
+
+## Normalized storefronts — November 2, 2026
+
+Owned copies now select storefronts from a shared catalog, including Steam, Xbox Store, GOG, and Epic Store. Stored IDs are stable for future sorting/grouping; copy details display the readable labels. Other keeps a separate custom store name, and Not specified remains available. Startup migration and older backup imports normalize recognized aliases and preserve custom shops, including legacy literal Other values. Migration preserves copy details/timestamps and is idempotent. API and model validation enforce the catalog and custom-name requirements.
+
+Validation: 80 affected tests pass (41 client, 39 server), production build and whitespace checks pass. Server checks use disposable MongoDB and cover startup migration, copy create/update, and backup round trips. Review in **Game library → open a game → Add owned copy / Edit copy → Store / storefront**.
+
+## Trophies as top-level tasks — November 1, 2026
+
+Trophies now support their own checkbox or counter, section links/main section, description, missable flag, and guide URL. Per the user’s clarified preference, trophy-earned checkboxes stay manual and independent of subtasks and counters. Toggling an award changes only its earned flag; Mark all completes subtasks and fills the trophy counter without changing that flag. Sections shows linked work directly, without an extra trophy grouping header; linked trophies appear as tasks with inherited subtasks. General supports trophy collapse, and Grid includes standalone trophies and trophy counters. Counters stay beside titles.
+
+Notebook format 2 gains compatible defaults without replacing existing records or progress. Trophy section links inherit through task trees, with an explicit opt-out for direct trophy subtasks. Independent copies opt out automatically and retain one destination section per copied branch. Server validation, copy/reset, autosave retry, and backup round trips cover the new fields. The separate hunt completion milestones remain unchanged. Existing counter subtasks are preserved; users can choose Counter in the trophy editor for future direct tracking.
+
+Validation: full client suite and production build pass; the affected server notebook and API suites pass (41 unit tests and 34 integration tests). No new live-browser visual verification was performed because Chrome access was previously denied. Prior notebook UI behavior below is historical and superseded by this update.
+
+## Notebook creation runtime fix — November 1, 2026
+
+The live API on port 4050 was still running pre-v2 notebook validation loaded at 13:27. This caused trophy/task creation to require legacy `sections` and item `sectionId`, and could reinterpret newly created sections in legacy responses. Restarted only the verified API and supervisor, preserving the frontend, MongoDB, session secret, and browser drafts.
+
+Diagnosed the recurrence: nodemon detected source changes but its Windows matching rules filtered every tested change out (1 file before filtering, 0 afterward). Replaced the `dev:server` command with Node's built-in `--watch --watch-preserve-output`; verified an actual change to `server/domain/notebook.js` restarts the API and returns it to health. The temporary probe was removed. The API remains a hidden background process, with logs in `.runtime/dev-api.log` and `.runtime/dev-api-error.log`; inspect the current port-4050 listener before future restarts. Existing nodemon configuration changes were preserved, though the development script no longer uses nodemon.
+
+Added regressions for saving a first trophy before any sections/tasks exist (22 notebook server tests pass) and creating consecutive sections while preserving previous sections, trophies, tasks, and revision state (34 Notebook interaction tests pass). Chrome access was not approved, so the user's open draft was not submitted; next review is to close the failed editor and use **Retry saving** in the notebook before refreshing.
+
+## Trophies and shared notebook sections — November 1, 2026
+
+Rebuilt notebooks around manually earned trophies, owned task trees, and reusable sections. General shows collapsible trees with main-section prefixes; Sections groups shared branches by trophy; Grid shows leaf objectives in trophy rows and section columns, including No section. Direct links inherit through current and future descendants, main selections stay valid after movement, and overall progress counts each leaf once. Trophy completion stays independent from task completion. Categories are removed.
+
+Native desktop drag handles reorder trophies, sections, and objectives; General supports nesting, promotion, and movement between trophies, while section/grid drops add links. Keyboard/touch editors and sibling arrows remain available. Nested rows use compact spacing. Delete controls appear only for empty trophies/sections, including the final group; unlinking remains separate from confirmed global task deletion.
+
+Notebook `formatVersion: 2` is separate from concurrency revisions. Legacy sections become unchecked trophies, retaining task IDs, hierarchy, progress, counters, notes, guide links, and missable flags. Conversion covers loading, saving, recovered drafts, copying, and backup import/export. New notebooks start empty. Copying resets both trophy and task completion. Existing autosave, conflict checks, and failed-save recovery remain; regression tests also cover revision updates received during saves.
+
+Validation: **293 tests pass (217 client, 76 server)**, production build and whitespace checks pass. Server integration tests use disposable MongoDB outside the sandbox and cover migration, repeat conversion, malformed references, revision conflicts, copy/reset, and backup round trips. Browser QA in an isolated fixture confirmed shared completion without duplicate totals, manual trophy completion, main-section editing and reload persistence, native nesting, and desktop/390px layouts without page horizontal overflow. Drag indicators, promotion, cancellation, and edge scrolling are covered by interaction tests; the browser automation's short promotion gesture did not dispatch an event at its destination. Screenshots: `.runtime/qa/notebook-v2-desktop.jpg` and `.runtime/qa/notebook-v2-mobile.jpg`. The temporary fixture and tab were removed; personal notebook data and unrelated workspace changes were preserved.
+
+## Active subscriptions on library cards and Trophy Hunts — November 1, 2026
+
+Game library cards, Trophy Hunts board rows, hunt details, and hunt CSV exports now show only active subscriptions. Expiration or deactivation hides the badge while retaining the game, hunt progress, and saved sources. Owned badges remain; unowned games with no active sources use the existing Not owned label. Library table view, game details, library exports, and provider filtering retain full source information. Validation: 71 affected library/hunt/date/domain tests pass, production build and whitespace checks pass.
+
+## Day/month/year dates — November 1, 2026
+
+Standardized user-facing dates as **DD/MM/YYYY** across subscription expiration, acquisition and release-date inputs, library Added dates, owned-copy/device acquisition dates, completion dates, backup previews, and hunt CSV exports. A shared DateInput provides explicit day-first entry, eight-digit mobile input, a calendar picker, and real-calendar validation. Invalid drafts stay visible and block saving; clearing/resetting works. ISO storage/API/JSON values and membership expiration rules are unchanged. Timestamps use the saved account time zone when available; date-only values never shift days. Backup filenames use DD-MM-YYYY.
+
+Validation: all **147 client tests pass**, production build and whitespace checks pass. Tests cover ambiguous dates, leap years, invalid/partial input, ISO round trips, timezone boundaries, calendar selection, acquisition/release editors, summaries, and CSV/backup output. Isolated browser QA confirmed 08/04/2027 remains 8 April after save/reload, calendar selection returns day-first text, invalid dates cannot overwrite saved dates, and desktop/390px mobile layout has no horizontal overflow. Screenshots: `.runtime/qa/dates-ddmmyyyy-desktop.png` and `.runtime/qa/dates-ddmmyyyy-mobile.png`.
+
+## Membership save runtime fix — November 1, 2026
+
+The personal app at `http://localhost:5173/settings` reported `API route not found` because its API on port 4050 was still running code loaded at 12:18, before `/api/memberships` was added. Confirmed client/server routing was correct. Restarted only the verified stale API and its nodemon supervisor; the frontend, demo, MongoDB, session secret, and browser draft were preserved. The replacement API passes `/api/health` and remains running. It is currently a hidden background nodemon process, with logs in `.runtime/dev-api.log` and `.runtime/dev-api-error.log`; identify its current port-4050 listener before stopping/restarting development services to avoid a duplicate listener.
+
+Enabled `legacyWatch` in `server/nodemon.json`; effective nodemon configuration confirms polling is enabled, although a timestamp-only touch did not demonstrate a reload. The user should retry **Save subscriptions** without refreshing. Their live form's end date was blank at the final check, so no membership values were submitted on their behalf.
+
 ## Current memberships and inactive access — November 1, 2026
 
 Implemented **Settings → My subscriptions** with explicit saves, optional inclusive Active through dates, saved account time zone initially taken from the browser, and inactive defaults. Game Pass now supports Essential (Core), Premium (Standard), PC, and Ultimate; Ultimate covers all four sources, Premium covers Essential and Premium, and PC remains independent. PS Plus Premium covers Extra and Basic; Extra covers Basic. Legacy generic Game Pass tags remain compatible and use any active Game Pass membership, with guidance to select a precise tier when known.

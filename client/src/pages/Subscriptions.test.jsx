@@ -26,10 +26,14 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-it('shows provider badges in cards and filters monthly games separately from catalog access', () => {
+it('shows only active provider badges in cards and keeps source filters independent of membership activity', () => {
+  context.user.memberships = { timeZone: 'UTC', gamePass: { tier: 'none', activeUntil: null }, psPlus: { tier: 'ps-plus-basic', activeUntil: null } }
+  context.data.games[0].subscriptions.push({ service: 'game-pass-ultimate' })
   render(<MemoryRouter><Library /></MemoryRouter>)
   const card = screen.getByRole('link', { name: /Monthly adventure/ })
-  expect(within(card).getByText('PS Plus Basic · Inactive')).toBeTruthy()
+  expect(within(card).getByText('PS Plus Basic · Active')).toBeTruthy()
+  expect(within(card).queryByText(/Game Pass Ultimate/)).toBeNull()
+  expect(screen.queryByText(/· Inactive/)).toBeNull()
   expect(within(card).queryByText('Owned')).toBeNull()
   fireEvent.change(screen.getByLabelText('Ownership filter'), { target: { value: 'ps-plus-basic' } })
   expect(screen.getByRole('link', { name: /Monthly adventure/ })).toBeTruthy()
@@ -84,7 +88,7 @@ it('updates source badges after expiration without hiding games or losing owners
   rerender(<MemoryRouter><Library /></MemoryRouter>)
   const monthly = screen.getByRole('link', { name: /Monthly adventure/ })
   expect(within(monthly).getByText('Owned')).toBeTruthy()
-  expect(within(monthly).getByText('PS Plus Basic · Inactive')).toBeTruthy()
+  expect(within(monthly).queryByText(/PS Plus Basic/)).toBeNull()
   expect(screen.getByRole('link', { name: /Catalog adventure/ })).toBeTruthy()
   fireEvent.change(screen.getByLabelText('Ownership filter'), { target: { value: 'subscription' } })
   expect(screen.getByRole('link', { name: /Pass adventure/ })).toBeTruthy()

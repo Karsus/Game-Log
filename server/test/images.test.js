@@ -230,7 +230,8 @@ test('missing Cloudinary configuration disables uploads while direct image URLs 
   const saved = await post(user, '/games', { title: 'Existing URL', cover }).expect(201)
   assert.equal(saved.body.cover, cover)
   const backup = (await user.agent.get('/api/backups/export').expect(200)).body
-  await post(user, '/backups/preview', backup).expect(200)
+  const recipient = await account('image-disabled-import@example.com', result.app)
+  await post(recipient, '/backups/preview', backup).expect(200)
 })
 
 test('Cloudinary service rejects non-HTTPS or malformed provider responses', async () => {

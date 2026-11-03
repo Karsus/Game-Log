@@ -18,10 +18,12 @@ The demo uses `demo@gamelog.local` / `GameLog-demo-2026!`. It starts a disposabl
 ## Use your own persistent collection
 
 1. Install dependencies with `npm ci` if needed. Keep the existing `enviroments/.env`; the directory spelling is retained from the original project. For a fresh checkout, copy `enviroments/.env.example` to `enviroments/.env`.
-2. Set `MONGO_URI` to your MongoDB database. A replica set, such as a MongoDB Atlas cluster or a local replica set, is recommended and required for backup imports and cascading game deletion. Creating and editing hunts also works on standalone MongoDB servers. Keep `PORT=4050`, `SITE_URL=http://localhost:5040`, `SERVER_URL=http://localhost:4050`, and `VITE_API_URL=/api` for the default development setup.
+2. Set `MONGO_URI` to your MongoDB database. A replica set, such as a MongoDB Atlas cluster or a local replica set, is recommended and required for backup imports. Creating/editing hunts and cascading game deletion also work on standalone MongoDB servers. Keep `PORT=4050`, `SITE_URL=http://localhost:5040`, `SERVER_URL=http://localhost:4050`, and `VITE_API_URL=/api` for the default development setup.
 3. Run `npm run dev`, open **http://localhost:5040**, and create your account. This starts an empty personal collection with the shared platform catalog. No demo records are inserted.
 
 The app stores collection data and sessions in MongoDB. A development session secret is generated in `.runtime/session-secret` when none is configured. Preserve that file to keep existing sessions across restarts. The API binds to localhost by default.
+
+The development API uses Node's built-in watch mode to restart when its source modules change. Restart development processes manually after editing `.env` configuration.
 
 If port 5040 is already in use, stop the previous development process you own before restarting. Vite deliberately fails instead of silently selecting a different port. If changing the development API port, also update the proxy target in `client/vite.config.js`.
 
@@ -33,14 +35,21 @@ If Windows denies port 5040 with `EACCES`, set `SITE_URL=http://localhost:5173` 
 - **Owned hardware:** individual devices with their own nickname, model, storage, color, serial number, condition, acquisition details, location, and notes. Two PS5 units remain two records under one platform.
 - **Games:** one editable entry with release platforms, metadata, personal notes/rating, and wishlist selections.
 - **Copies:** any number of physical or digital copies per game/platform, with edition, region, packaging, storefront, purchase information, and owned/lent/sold/lost state. Owned and lent copies count toward the current collection.
+- **Storefronts:** choose a standard store such as Steam, Xbox Store, GOG, or Epic Store for each copy. Stores use stable IDs shared by the client and server, ready for future sorting and grouping. **Other** keeps a custom shop name; **Not specified** leaves the store blank. Existing names and older backups are normalized without discarding custom shops.
 - **Subscription sources:** mark a game with Game Pass (or a specific Game Pass tier), PS Plus Basic, PS Plus Extra, or PS Plus Premium. These game-level choices do not need a platform and never count as owned games or copies. Use Basic for claimed monthly games and Extra/Premium for catalog access; choose the source of the game even if your membership includes a higher tier. A separate owned copy of the same game still counts normally.
 - **Hunts:** separate progress for each game, platform, achievement service, and optional edition/list label. Copies on the same platform can share a hunt; an additional label creates a separate regional or edition trophy list.
+
+Adding a game or changing its title/IGDB identity cannot duplicate another game in your account. Matches use the same IGDB ID or title after ignoring capitalization and extra whitespace; punctuation and accents remain significant. Release year and platform do not distinguish duplicates. The form shows the existing entry and offers **Open existing game**; add another copy or hunt there. Existing duplicates are preserved and still accept unrelated edits, so you can review and remove them yourself. This protection also applies to backup imports and simultaneous save requests.
+
+**Delete game** removes the game, its copies, and its hunts/notebooks after confirmation. Replica sets commit the deletion together. Standalone MongoDB deletes related records first and the game last; if cleanup fails, the error explains that some records may already be removed and asks you to reload and retry. Export a backup before deleting anything you want to keep.
 
 In **Add game** or **Edit game**, check the applicable sources under **Subscription access** and save. Existing games also have an **Edit subscriptions** button. Keep these source labels when your membership ends: current membership status is managed separately in Settings. Platforms remain part of copies and hunt setup. A new PC hunt defaults to Xbox for a Game Pass-only game or PlayStation for a PS Plus-only game; when both providers are selected it keeps the platform default, and you can always choose a different achievement service.
 
 Library cards, tables, game details, hunt views, and CSV exports show **Active** or **Inactive** for each subscription source separately from ownership. Inactive games stay visible and editable; their tags, hunts, and notebooks are kept. Filter by all subscriptions, all Game Pass, all PS Plus, or a specific tier; these filters include active and inactive sources. Subscription selections apply to the whole game; platform filters still use its releases, copies, wishlist versions, and hunts. **Not owned** includes subscription games without an owned copy on the selected platform. Format filters apply to owned copies.
 
 ## Current memberships and expiration
+
+All displayed and entered dates use **day/month/year (DD/MM/YYYY)**. Date fields accept this format or eight digits and retain a calendar picker. Invalid calendar dates are rejected. Collection tables, completion dates, backup previews, and CSV dates use the same order. Download filenames use DD-MM-YYYY; JSON backups and API values retain ISO dates for compatibility.
 
 Use **Settings → My subscriptions** to select your current Game Pass and PS Plus tiers, optionally enter an **Active through** date, then choose **Save subscriptions**. New and older accounts start with both memberships set to **None**, so subscription sources are inactive until configured. Failed saves keep the entered draft. Set a provider to None to disable it, select a tier to reactivate it, or update/clear an expired date to renew access.
 
@@ -76,11 +85,25 @@ Use platform, ownership, achievement service, status, and difficulty filters. **
 
 ## Trophy notebook
 
-Each hunt has its own chapter/section notebook. Add a single reminder or paste one item per line. Items support categories, nested subtasks, counters, notes, guide links, and a missable flag. Reorder sections/items, and switch between the list and chapter-by-category grid; both edit the same data.
+Each hunt has its own trophy notebook. Trophies are top-level tasks: give a trophy its own checkbox or counter, optional description, section links, guide link, and missable marker. Add subtasks only when useful, or paste one task per line. A trophy’s earned checkbox is always manual and independent: completing subtasks or reaching its counter target never marks it earned. Checking or unchecking the trophy preserves all counters and subtask progress. Notebook completion does not change the hunt’s separate completion milestones.
+
+**General** shows each trophy’s task tree. A trophy or task’s main section prefixes its displayed title, for example **Chapter 3 - Get all flowers**. **Sections** shows linked tasks directly, without repeating their trophy as a group heading. A trophy appears as a task there only when it is itself linked. **Grid** compares trophy rows against section columns, showing individual objectives, standalone trophies, and trophy counters; unlinked objectives appear in **No section**. Checking an item in any view updates every appearance. Overall task progress counts each leaf objective and each trophy counter once, even if it appears in several sections; checkbox parents are not counted again.
+
+Use a trophy or task’s editor to select direct section links and its main section. Linking a parent includes all its current and future subtasks. Direct trophy subtasks can turn off **Inherit trophy section links** for their branch; independent copies do this automatically. Children may add their own links and choose a different main section. The editor distinguishes direct and inherited membership; removing a direct link still leaves any inherited membership in effect. If a main section becomes unavailable, the task uses its closest parent’s valid main section, its trophy’s main section when inherited, or the first available linked section. Categories are no longer used.
+
+Use a task’s **Duplicate task into sections** button to select several destinations, or **Select all**, and create independent copies at once. Each destination gets the task and its subtasks under the same trophy, with unchecked tasks and counters reset to zero. Copies start at the top level and link only to their destination section; the original task stays unchanged. Progress is independent for each copy. **Section links** still displays one shared task in several sections.
+
+Each trophy’s **Mark all** button completes all its subtasks and fills its own counter, including collapsed subtasks and tasks hidden by a filter or shown in other sections. Its earned checkbox stays unchanged. The button hides when there is no task or counter work to complete, and returns if progress becomes incomplete or tasks are added. Counter controls appear beside trophy and task titles and wrap when space is limited.
+
+On desktop, grip handles reorder trophies and sections. In General, drop near a task’s top or bottom edge to reorder, onto its center to nest, or into a trophy’s top-level area to promote it. Dropping a trophy or task into a section adds a link without removing other links. Grid drops add section links, reorder objectives, or move tasks to another trophy row; Grid does not create nesting. Use the editor to remove links; dropping linked work into No section does not silently unlink it. The page and grid scroll near their edges while dragging. Edit dialogs and movement buttons remain available for keyboard and touch use.
+
+Chevrons collapse trophy and task branches in General and Sections; Grid still shows their individual objectives. Parent-task checkboxes complete or clear their whole branch, including collapsed subtasks; trophy-earned checkboxes only change the trophy’s earned state. **Unlink from section** removes a direct link, while **Delete task** removes that task and its subtasks from every view after confirmation. Trophies can be deleted when they have no subtasks, and sections only when they have no linked trophies or tasks. Filtered-out and inherited tasks still make a section nonempty.
 
 Changes save immediately. Failed saves keep the draft visible, with retry, download, and reload controls. Unsaved drafts also remain in this browser tab's session storage, scoped to the account and hunt, so navigating away and returning can recover them. Concurrent writes are rejected instead of overwriting another window's notebook. Download a conflicting draft before reloading the current server version.
 
-**Copy to hunt** replaces the destination notebook with a copy and resets its checkboxes/counters. The source remains unchanged.
+**Copy to hunt** replaces the destination notebook with a copy, preserving its task trees, section links, and main sections while resetting trophy checkboxes and task progress. The source remains unchanged.
+
+Notebook format 2 separates trophies from reusable sections. Older notebooks and drafts convert their original sections into unchecked trophies and preserve task hierarchy and progress; new section links start empty and obsolete category metadata is discarded. Conversion also applies to copied notebooks and backup import/export. The notebook’s revision remains a separate concurrency token.
 
 ## Optional IGDB lookup
 
@@ -121,7 +144,7 @@ Replacing/clearing an image or deleting a record does **not** delete the hosted 
 
 Settings provides versioned JSON export and a validated preview before import. A backup contains private platforms, games, copies, devices, hunts/notebooks, and preferences, with no passwords or session data.
 
-Import **adds** new records with remapped IDs and restores the backup's preferences. It does not merge duplicate games or overwrite existing collection records. Importing the same backup twice creates duplicates. Import writes are transactional. The maximum upload is 10 MB. The catalog and hunt board also export their current filtered view as CSV, with spreadsheet formula injection protection.
+Import **adds** new records with remapped IDs and restores the backup's preferences. It does not merge duplicate games or overwrite existing collection records. Preview and import reject the entire backup if it contains duplicate games or matches games already in your account, including a repeated import of the same games. Resolve those conflicts before importing. Import checks again when you confirm; writes are transactional, so a conflict leaves collection records, preferences, and memberships unchanged. Existing duplicates can still be exported for safekeeping. The maximum upload is 10 MB. The catalog and hunt board also export their current filtered view as CSV, with spreadsheet formula injection protection.
 
 ## Account recovery
 
